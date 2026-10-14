@@ -44,7 +44,7 @@ const bridge = createDataDemoHost({
 - URL 必须包含 `embed=1` 和精确 `hostOrigin`，例如 `https://host.example`；不能包含路径、尾斜杠、凭据或 `*`。必须在 iframe 中运行嵌入模式。
 - 缺省只允许工具自身 origin，`/host.html` 为同源示例。跨域宿主必须在**构建时**配置 `VITE_DEMO_ALLOWED_ORIGINS=https://host.example,https://second.example`，重新构建后部署。不要把密钥放到任何 `VITE_*` 变量中。
 - 白名单只能批准允许接入的父窗口；静态部署仍应设置合适的 `Content-Security-Policy: frame-ancestors ...` 响应头。静态页面不能自行替服务器设置这个响应头。
-- 此演示支持 `light/dark` 两种主题，使用自身样式令牌。首版不接受任意 CSS 或完整宿主调色板；它不冒充画板的 `yzlingxi.theme/v1` 协议。
+- 此演示支持 `light/dark/blue` 三种主题（blue 为蓝色暗色，供蓝色系宿主下发），使用自身样式令牌。首版不接受任意 CSS 或完整宿主调色板；它不冒充画板的 `yzlingxi.theme/v1` 协议。
 - 页面适应 iframe 宽度，高度由宿主容器决定，建议桌面高度至少 720 px；窄容器保留工具内部滚动，不向宿主页面注入全局样式。
 
 ## 消息契约

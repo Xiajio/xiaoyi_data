@@ -1,6 +1,6 @@
 export const PAGES = ['overview','intake','processing','review','cases','publish','audit'] as const;
 export type PageId = typeof PAGES[number];
-export type Theme = 'light' | 'dark';
+export type Theme = 'light' | 'dark' | 'blue';
 export type Role = 'reviewer' | 'manager' | 'lead' | 'operator';
 export const ROLE_LABELS: Record<Role,string> = { reviewer:'临床审核员',manager:'数据管理员',lead:'项目负责人',operator:'技术运维' };
 export const PAGE_LABELS: Record<PageId,string> = {overview:'工作概览',intake:'数据接入',processing:'数据处理',review:'核验工作台',cases:'病例资料库',publish:'数据集与发布',audit:'运行与审计'};

@@ -68,6 +68,7 @@ describe('frame lifecycle',() => {
   const h = harness();h.receive(message('init',{initialPage:'review',theme:'dark'}));h.receive(message('init',{initialPage:'overview'},{seq:2}));
   expect(h.callbacks.onInit).toHaveBeenCalledTimes(1);
   expect(h.callbacks.onInit).toHaveBeenCalledWith({sessionId,initialPage:'review',theme:'dark'});
+  { const hb = harness(); hb.receive(message('init',{theme:'blue'})); expect(hb.callbacks.onInit).toHaveBeenCalledWith({sessionId,initialPage:undefined,theme:'blue'}); hb.receive(message('theme',{theme:'blue'},{seq:2})); expect(hb.callbacks.onTheme).toHaveBeenCalledWith('blue'); }
   expect(h.post.mock.calls.filter(([data])=>data.type === 'ready')).toHaveLength(2);
  });
  it('handles valid commands and attaches the current binding to outbound events',() => {

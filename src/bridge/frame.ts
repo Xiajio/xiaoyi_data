@@ -18,7 +18,7 @@ const record = (value:unknown):value is RecordValue => !!value && typeof value =
 const keys = (value:RecordValue, allowed:readonly string[]) => Object.keys(value).every(key => allowed.includes(key));
 export const validToken = (value:unknown):value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(value);
 const page = (value:unknown):value is PageId => typeof value === 'string' && (PAGES as readonly string[]).includes(value);
-const theme = (value:unknown):value is Theme => value === 'light' || value === 'dark';
+const theme = (value:unknown):value is Theme => value === 'light' || value === 'dark' || value === 'blue';
 export function exactOrigin(value:unknown):string|null {
   if (typeof value !== 'string' || value.trim() !== value) return null;
   try { const url = new URL(value); return ['http:','https:'].includes(url.protocol) && url.origin === value ? value : null; } catch { return null; }
