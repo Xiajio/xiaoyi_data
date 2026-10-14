@@ -12,13 +12,13 @@ const newToken = () => { const bytes = new Uint32Array(4); crypto.getRandomValue
 function origin(value) { try { const url = new URL(value); return ['http:','https:'].includes(url.protocol) && url.origin === value; } catch { return false; } }
 function checkSession(value) { if (!token(value)) throw new Error('sessionId 必须是 1–96 位字母、数字或 . _ : -。'); }
 /**
- * @param {{iframe:HTMLIFrameElement,frameOrigin:string,sessionId:string,initialPage?:string,theme?:'light'|'dark',onEvent?:(event:object)=>void}} options
+ * @param {{iframe:HTMLIFrameElement,frameOrigin:string,sessionId:string,initialPage?:string,theme?:'light'|'dark'|'blue',onEvent?:(event:object)=>void}} options
  */
 export function createDataDemoHost(options) {
   if (!origin(options.frameOrigin)) throw new Error('frameOrigin 必须为精确 HTTP(S) origin。');
   checkSession(options.sessionId);
   if (options.initialPage !== undefined && !PAGES.includes(options.initialPage)) throw new Error('初始页面无效。');
-  if (options.theme !== undefined && !['light','dark'].includes(options.theme)) throw new Error('主题无效。');
+  if (options.theme !== undefined && !['light','dark','blue'].includes(options.theme)) throw new Error('主题无效。');
   let sessionId = options.sessionId;
   let selectedTheme = options.theme;
   let initialPage = options.initialPage;
@@ -75,7 +75,7 @@ export function createDataDemoHost(options) {
       initialPage = page;
       return command('navigate',{page,...selection});
     },
-    setTheme(theme) { if (!['light','dark'].includes(theme)) throw new Error('主题无效。'); selectedTheme = theme; return command('theme',{theme}); },
+    setTheme(theme) { if (!['light','dark','blue'].includes(theme)) throw new Error('主题无效。'); selectedTheme = theme; return command('theme',{theme}); },
     reset() { return command('reset',{}); },
     switchSession(nextSessionId) {
       checkSession(nextSessionId);
