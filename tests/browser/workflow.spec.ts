@@ -95,7 +95,7 @@ test('corrupt cache stays untouched until explicit reset',async({page})=>{
   await page.getByRole('button',{name:'重置此演示会话'}).click();
   await page.getByRole('button',{name:'确认重置'}).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
-  expect((await saved(page)).schemaVersion).toBe(1);
+  expect((await saved(page)).schemaVersion).toBe(2);
 });
 
 test('unavailable browser storage runs in memory with a clear notice',async({page})=>{

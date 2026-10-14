@@ -19,7 +19,7 @@ describe('synthetic seed and evidence', () => {
     expect(first.patients).toHaveLength(4);
     expect(first.assets).toHaveLength(12);
     expect(first.fields).toHaveLength(6);
-    expect(getSummary(first)).toEqual({ pending: 5, critical: 3, reviewed: 1, publishable: 1, approved: 0, running: false });
+    expect(getSummary(first)).toMatchObject({ pending: 5, critical: 3, reviewed: 1, publishable: 1, approved: 0, running: false });
     first.fields[0].value = 'changed';
     expect(second.fields[0].value).toBe('乙状结肠');
     expect(second.fields[1].evidence).toContain('2026年03月05日');

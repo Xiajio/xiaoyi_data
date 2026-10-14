@@ -76,3 +76,9 @@ const bridge = createDataDemoHost({
 关闭、卸载时调用 `dispose()`，移除监听器并作废实例。工具自己的处理定时器和存储逻辑由应用层清理；桥不承诺后台继续运行。session 切换后的状态还原与未完成任务中断应由应用层执行，桥只传递经过验证的初始化指令。
 
 `/host.html` 可验证真实 iframe 打开/关闭/重开、明暗主题、七页定位、R-01 字段跳转、切换新会话并返回上一会话、重置以及导出事件显示。在核验完成、冻结快照并审批后，从工具内点击导出，右侧显示消息正文并启用“下载演示 JSON”，下载内容为 export 事件中的 `payload.data`；未收到有效结果时按钮禁用，切换会话或重置会清空下载结果。这个导出验证的是演示交互，不证明真实科研数据处理或临床算法能力。
+
+## v0.2 资料总览与扫描状态
+
+协议继续使用 `xiaoyi.data-demo/v1`，宿主初始化参数不变。`stateChanged.payload.summary.inventory` 新增资料统计对象，含 `total/pending/processing/processed/failed/restricted` 和按 `text/table/wsi/image` 类型拆分的 `byKind`。原有 `summary.pending` 仍表示待核验字段数，两种计数不能混用。
+
+扫描在工具页面内配置并运行，宿主桥不接收任意文件路径或真实患者资料。关闭／重开、切换会话与重置会清理旧计时器；加载会话时中断扫描并暂停自动扫描，由演示者再次启用。浏览器存储记录升级为 schemaVersion 2，沿用原会话存储键并迁移合法旧数据。

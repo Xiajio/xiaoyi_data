@@ -9,7 +9,7 @@ import { createFrameBridge, getEmbedConfig, type FrameBridge } from './bridge/fr
 
 const ICONS = {overview:LayoutDashboard,intake:FileInput,processing:Workflow,review:ShieldCheck,cases:Files,publish:Database,audit:Activity};
 type Loaded = { state:DemoState; notice:string|null; blocked:boolean };
-const successText: Partial<Record<DemoAction['type'],string>> = {REVIEW:'核验结果已记录，原始依据保持不变。',FREEZE:'候选版本已冻结，请切换项目负责人视角进行审批。',APPROVE:'演示版本已批准，可以查看和导出。',INTAKE:'合成资料批次已接入。',START_RUN:'模拟任务已开始，既有核验结果将保留。'};
+const successText: Partial<Record<DemoAction['type'],string>> = {REVIEW:'核验结果已记录，原始依据保持不变。',FREEZE:'候选版本已冻结，请切换项目负责人视角进行审批。',APPROVE:'演示版本已批准，可以查看和导出。',INTAKE:'合成资料批次已接入。',START_RUN:'模拟任务已开始，既有核验结果将保留。',START_SCAN:'目录扫描已开始，扫描结果可确认加入资料库。',IMPORT_SCAN:'新发现的合成资料已加入待处理队列。',STOP_SCAN:'本次目录扫描已停止。'};
 function fromHash():PageId|undefined { const page=window.location.hash.replace(/^#\/?/,''); return PAGES.includes(page as PageId)?page as PageId:undefined; }
 
 export function App() {
@@ -22,6 +22,7 @@ export function App() {
   });
   const current=useRef(loaded); current.current=loaded;
   const bridge=useRef<FrameBridge|null>(null);
+  const lifecycle=useRef(0);
   const [message,setMessage]=useState('');
   const [saveNotice,setSaveNotice]=useState<string|null>(null);
   const [mobileNav,setMobileNav]=useState(false);
@@ -42,6 +43,7 @@ export function App() {
   },[apply,notify]);
   const reset=useCallback(()=>{
     const value=current.current;if(!value)return;
+    lifecycle.current += 1;
     const notice=resetSession(value.state.sessionId);
     const state={...createInitialState(value.state.sessionId),theme:value.state.theme};
     apply({state,notice,blocked:false});setSaveNotice(null);setMobileNav(false);
@@ -52,8 +54,9 @@ export function App() {
     if(!config.embedded || config.error) return;
     const instance=createFrameBridge(config,{
       onInit(params){
+        lifecycle.current += 1;
         const previous=current.current;
-        if(previous && !previous.blocked) saveSession(previous.state.runs.some(run=>run.status==="running")?transition(previous.state,{type:"INTERRUPT_RUNS"}):previous.state);
+        if(previous && !previous.blocked) saveSession(transition(previous.state,{type:"INTERRUPT_RUNS"}));
         const result=loadSession(params.sessionId);
         if(params.initialPage)result.state={...result.state,page:params.initialPage};
         if(params.theme)result.state={...result.state,theme:params.theme};
@@ -90,6 +93,28 @@ export function App() {
     },1100);
     return ()=>window.clearTimeout(timer);
   },[activeRun?.id,activeRun?.step,loaded?.state.sessionId,loaded?.blocked,dispatch]);
+  const activeScan=loaded?.state.scans.find(scan=>scan.status==='running');
+  useEffect(()=>{
+    if(!activeScan || loaded?.blocked)return;
+    const scanId=activeScan.id;const sessionId=loaded!.state.sessionId;
+    const generation=lifecycle.current;
+    const timer=window.setTimeout(()=>{
+      const value=current.current;
+      if(lifecycle.current===generation && value?.state.sessionId===sessionId && value.state.scans.some(scan=>scan.id===scanId && scan.status==='running' && scan.step===activeScan.step))dispatch({type:'ADVANCE_SCAN',scanId});
+    },900);
+    return ()=>window.clearTimeout(timer);
+  },[activeScan?.id,activeScan?.step,loaded?.state.sessionId,loaded?.blocked,dispatch]);
+  const autoEnabled=loaded?.state.scanConfig.autoEnabled;
+  const nextScanAt=loaded?.state.scanConfig.nextScanAt;
+  useEffect(()=>{
+    if(!loaded || loaded.blocked || !autoEnabled || !nextScanAt || activeScan)return;
+    const sessionId=loaded.state.sessionId;const generation=lifecycle.current;
+    const timer=window.setTimeout(()=>{
+      const value=current.current;
+      if(lifecycle.current===generation && value?.state.sessionId===sessionId && !value.blocked && value.state.scanConfig.autoEnabled && value.state.scanConfig.nextScanAt===nextScanAt && !value.state.scans.some(scan=>scan.status==='running'))dispatch({type:'START_SCAN',trigger:'automatic'});
+    },Math.max(0,Date.parse(nextScanAt)-Date.now()));
+    return ()=>window.clearTimeout(timer);
+  },[autoEnabled,nextScanAt,activeScan?.id,loaded?.state.sessionId,loaded?.blocked,dispatch]);
   useEffect(()=>{if(!message)return;const timer=window.setTimeout(()=>setMessage(''),5500);return ()=>clearTimeout(timer);},[message]);
 
   const onExport=useCallback((snapshotId:string)=>{
@@ -127,7 +152,7 @@ export function App() {
       <div className="demo-strip"><span className="demo-tag">演示环境</span><span>全部资料均为虚构示例</span><span className="demo-strip-detail">用于演示整理、核验与版本发布流程</span><span className="session-status"><i/> {saveNotice?'仅本次有效':loaded.blocked?'缓存待重置':'进度自动保存在本机'}</span></div>
       {notice && <div className="storage-notice" role="alert">{notice}{loaded.blocked&&<button className="btn small" onClick={()=>resetDialog.current?.showModal()}>重置此演示会话</button>}</div>}
       <main id="workspace-content" tabIndex={-1} className="workspace-content"><Pages key={`${state.sessionId}:${viewEpoch}`} state={state} dispatch={dispatch} onExport={onExport}/></main>
-      <footer className="workspace-footer"><span>小亿数据 <span className="version">v0.1</span></span><span>DEMO-B01 · 4 名研究对象 · 12 项合成资料</span><span>本地演示，未连接医院或模型服务</span></footer>
+      <footer className="workspace-footer"><span>小亿数据 <span className="version">v0.2</span></span><span>DEMO-B01 · {state.patients.length} 名研究对象 · {state.assets.length} 项合成资料</span><span>本地演示，未连接医院或模型服务</span></footer>
     </div>
     <div className={`toast ${message?'visible':''}`} role="status" aria-live="polite">{message}</div>
     <dialog className="reset-dialog" ref={resetDialog}><form method="dialog"><div className="dialog-icon"><RotateCcw size={23}/></div><h2>重新开始这次演示？</h2><p>当前会话的核验、模拟任务和发布版本将恢复到初始示例。其他演示会话不受影响。</p><div className="dialog-actions"><button className="btn" value="cancel">保留进度</button><button className="btn primary" type="button" onClick={reset}>确认重置</button></div></form></dialog>

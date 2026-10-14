@@ -1,5 +1,6 @@
 import { createInitialState } from './seed';
 import { isReviewed, transition } from './model';
+import { getScanCandidates, SCAN_ASSETS, SCAN_DIRECTORIES } from './scanning';
 import { PAGES, type DemoState, type Field, type Role } from './types';
 
 const prefix = 'xiaoyi-data-demo:v1:';
@@ -24,15 +25,26 @@ function list(value: unknown, max = 20000): unknown[] { ensure(Array.isArray(val
 function unique(values: unknown[]): boolean { return new Set(values).size === values.length; }
 function validRole(value: unknown): boolean { return roles.includes(value as Role); }
 function sessionValid(value: unknown): value is string { return text(value, 128) && value.trim().length > 0 && !/[\u0000-\u001f]/.test(value); }
-function assertState(value: unknown, sessionId: string): asserts value is DemoState {
+function assertState(value: unknown, sessionId: string, expectedVersion: 1|2 = 2): asserts value is DemoState {
   const state = record(value);
-  ensure(state.schemaVersion === 1 && state.sessionId === sessionId && sessionValid(sessionId), '会话或格式版本错误');
+  ensure(state.schemaVersion === expectedVersion && state.sessionId === sessionId && sessionValid(sessionId), '会话或格式版本错误');
   ensure(integer(state.revision, 1) && PAGES.includes(state.page as DemoState['page']) && ['light', 'dark'].includes(String(state.theme)) && validRole(state.role), '视图状态错误');
   ensure(typeof state.intakeDone === 'boolean', '接入状态错误');
   const seed = createInitialState(sessionId);
   // These are fixed synthetic sources. No action in this demo can change them.
   ensure(JSON.stringify(state.patients) === JSON.stringify(seed.patients), '研究对象资料不匹配');
-  ensure(JSON.stringify(state.assets) === JSON.stringify(seed.assets), '资料目录不匹配');
+  const assets = list(state.assets, 16).map(record);
+  if (expectedVersion === 1) ensure(JSON.stringify(state.assets) === JSON.stringify(seed.assets), '资料目录不匹配');
+  else {
+    const allowedAssets = [...seed.assets, ...SCAN_ASSETS];
+    ensure(assets.length >= seed.assets.length && unique(assets.map(asset => asset.id)), '资料目录不完整或标识重复');
+    ensure(seed.assets.every(asset => assets.some(item => item.id === asset.id)), '预置资料缺失');
+    assets.forEach(asset => ensure(JSON.stringify(asset) === JSON.stringify(allowedAssets.find(item => item.id === asset.id)), '资料目录元数据不匹配'));
+    const processing = record(state.assetProcessing);
+    ensure(Object.keys(processing).length === assets.length && assets.every(asset => typeof asset.id === 'string' && ['pending', 'processing', 'processed', 'failed', 'restricted'].includes(String(processing[asset.id]))), '资料处理状态不完整');
+    assets.forEach(asset => ensure(asset.status === 'restricted' ? processing[String(asset.id)] === 'restricted' : processing[String(asset.id)] !== 'restricted', '资料受限状态不匹配'));
+    ensure(['all', 'pending', 'processing', 'processed', 'failed', 'restricted'].includes(String(state.assetFilter)), '资料筛选状态错误');
+  }
   const seedFields = new Map(seed.fields.map(field => [field.id, field]));
   const validateField = (value: unknown): Field => {
     const field = record(value);
@@ -102,9 +114,64 @@ function assertState(value: unknown, sessionId: string): asserts value is DemoSt
     if (run.status === 'failed') ensure(run.fail === true && run.step === 2, '任务失败阶段错误');
     if (run.status === 'running' && run.fail) ensure(Number(run.step) < 2, '失败任务不可继续运行');
     if (run.status === 'interrupted') ensure(Number(run.step) < 4, '任务中断阶段错误');
+    if (expectedVersion === 2) {
+      const ids = list(run.assetIds, 16);
+      ensure(unique(ids) && ids.every(id => assets.some(asset => asset.id === id && asset.status === 'indexed')), '任务资料引用错误');
+      ensure(run.legacy === undefined || run.legacy === true, '历史任务标识错误');
+      if (run.legacy) ensure(ids.length === 0 && run.status !== 'running', '旧版任务不应自动恢复执行');
+      else ensure(ids.length > 0, '任务输入范围为空');
+    }
     if (run.retryOf !== undefined) ensure(text(run.retryOf, 128) && run.retryOf !== run.id && runs.some(prior => record(prior).id === run.retryOf && ['failed', 'interrupted'].includes(String(record(prior).status))), '重试任务引用错误');
   });
   ensure(!runs.length || state.intakeDone, '任务缺少演示接入记录');
+  if (expectedVersion === 2) {
+    const processing = record(state.assetProcessing);
+    const runningIds = runs.filter(item => record(item).status === 'running').flatMap(item => list(record(item).assetIds, 16));
+    ensure(assets.every(asset => (processing[String(asset.id)] === 'processing') === runningIds.includes(asset.id)), '运行任务与资料处理状态不一致');
+    assets.forEach(asset => {
+      const status = processing[String(asset.id)];
+      if (status === 'processed') ensure(runs.some(item => { const run = record(item); return !run.legacy && run.status === 'completed' && list(run.assetIds, 16).includes(asset.id); }), '已处理资料缺少成功运行记录');
+      if (status === 'failed') ensure(runs.some(item => { const run = record(item); return !run.legacy && run.status === 'failed' && list(run.assetIds, 16).includes(asset.id); }), '失败资料缺少失败运行记录');
+    });
+    const config = record(state.scanConfig);
+    ensure(SCAN_DIRECTORIES.some(directory => directory.id === config.directoryId) && typeof config.recursive === 'boolean' && typeof config.autoEnabled === 'boolean' && [15, 30, 60].includes(Number(config.intervalSeconds)) && typeof config.intervalSeconds === 'number', '扫描配置错误');
+    const scans = list(state.scans);
+    ensure(unique(scans.map(item => record(item).id)), '扫描标识重复');
+    const activeScans = scans.filter(item => record(item).status === 'running');
+    ensure(activeScans.length <= 1, '存在多个运行中的扫描');
+    ensure(config.autoEnabled && !activeScans.length ? timestamp(config.nextScanAt) : config.nextScanAt === undefined, '自动扫描计划时间错误');
+    const importedIds: unknown[] = [];
+    scans.forEach(item => {
+      const scan = record(item);
+      ensure(text(scan.id, 128) && ['running', 'completed', 'interrupted'].includes(String(scan.status)) && integer(scan.step, 0, 4) && ['manual', 'automatic'].includes(String(scan.trigger)) && timestamp(scan.startedAt), '扫描记录格式错误');
+      ensure(SCAN_DIRECTORIES.some(directory => directory.id === scan.directoryId) && typeof scan.recursive === 'boolean', '扫描来源配置错误');
+      const entries = list(scan.entries, 7).map(record);
+      const imported = list(scan.importedAssetIds, 4);
+      ensure(unique(imported), '扫描导入标识重复');
+      if (scan.status === 'completed') {
+        ensure(scan.step === 4 && timestamp(scan.finishedAt), '扫描完成阶段错误');
+        const candidates = getScanCandidates(scan.directoryId as 'inbox'|'archive', scan.recursive as boolean);
+        ensure(entries.length === candidates.length, '扫描结果数量错误');
+        entries.forEach((entry, index) => {
+          const candidate = candidates[index];
+          ensure(entry.path === candidate.path && entry.assetId === candidate.assetId, '扫描结果来源错误');
+          ensure(candidate.status === 'new' ? ['new', 'duplicate'].includes(String(entry.status)) : entry.status === candidate.status, '扫描结果状态错误');
+          const reason = entry.status === 'duplicate' ? '演示资料库中已有同一资料标识，跳过重复导入。' : candidate.reason;
+          ensure(entry.reason === reason, '扫描结果说明错误');
+          if (entry.status === 'duplicate') ensure(assets.some(asset => asset.id === entry.assetId), '重复扫描资料不在目录中');
+        });
+      } else {
+        ensure(Number(scan.step) < 4 && entries.length === 0 && imported.length === 0, '未完成扫描不能包含已导入结果');
+        ensure(scan.status === 'running' ? scan.finishedAt === undefined : timestamp(scan.finishedAt), '扫描结束时间错误');
+      }
+      ensure(imported.every(id => entries.some(entry => entry.assetId === id && entry.status === 'new') && SCAN_ASSETS.some(asset => asset.id === id) && assets.some(asset => asset.id === id)), '扫描导入来源引用错误');
+      importedIds.push(...imported);
+    });
+    ensure(unique(importedIds), '同一资料被多个扫描重复导入');
+    const dynamicIds = assets.filter(asset => !seed.assets.some(original => original.id === asset.id)).map(asset => asset.id);
+    ensure(dynamicIds.length === importedIds.length && dynamicIds.every(id => importedIds.includes(id)), '新增资料缺少确认导入记录');
+    ensure(!dynamicIds.length || state.intakeDone, '新增资料缺少接入确认');
+  }
   const audit = list(state.audit, 100000);
   ensure(unique(audit.map(item => record(item).id)), '审计记录标识重复');
   audit.forEach(item => {
@@ -113,6 +180,13 @@ function assertState(value: unknown, sessionId: string): asserts value is DemoSt
   });
 }
 
+function migrateLegacy(state: DemoState): DemoState {
+  const seed = createInitialState(state.sessionId);
+  const migrated: DemoState = { ...state, schemaVersion: 2, assetProcessing: seed.assetProcessing, assetFilter: 'all', scanConfig: seed.scanConfig, scans: [], runs: state.runs.map(run => ({ ...run, assetIds: [], legacy: true })) };
+  return transition(migrated, { type: 'INTERRUPT_RUNS' });
+}
+function hasActiveWork(state: DemoState) { return state.runs.some(run => run.status === 'running') || state.scans.some(scan => scan.status === 'running') || state.scanConfig.autoEnabled; }
+function restoreInterrupted(state: DemoState): DemoState { return hasActiveWork(state) ? transition(state, { type: 'INTERRUPT_RUNS' }) : state; }
 export function loadSession(sessionId: string): { state: DemoState; notice: string | null; blocked: boolean } {
   const initial = createInitialState(sessionId);
   if (!sessionValid(sessionId)) {
@@ -122,7 +196,7 @@ export function loadSession(sessionId: string): { state: DemoState; notice: stri
   if (blockedSessions.has(sessionId)) return { state: initial, notice: corrupt, blocked: true };
   const inMemory = memorySessions.get(sessionId);
   if (unsavedSessions.has(sessionId) && inMemory) {
-    const state = transition(inMemory, { type: 'INTERRUPT_RUNS' });
+    const state = restoreInterrupted(inMemory);
     memorySessions.set(sessionId, structuredClone(state));
     return { state, notice: unavailable, blocked: false };
   }
@@ -130,7 +204,7 @@ export function loadSession(sessionId: string): { state: DemoState; notice: stri
   try { raw = localStorage.getItem(key(sessionId)); }
   catch {
     const cached = memorySessions.get(sessionId);
-    const state = cached ? transition(cached, { type: 'INTERRUPT_RUNS' }) : initial;
+    const state = cached ? restoreInterrupted(cached) : initial;
     memorySessions.set(sessionId, structuredClone(state));
     return { state, notice: unavailable, blocked: false };
   }
@@ -138,11 +212,13 @@ export function loadSession(sessionId: string): { state: DemoState; notice: stri
   try {
     ensure(raw.length <= 10000000, '记录过大');
     const parsed: unknown = JSON.parse(raw);
-    assertState(parsed, sessionId);
-    const interrupted = parsed.runs.some(run => run.status === 'running');
-    const state = interrupted ? transition(parsed, { type: 'INTERRUPT_RUNS' }) : parsed;
+    const legacy = record(parsed).schemaVersion === 1;
+    assertState(parsed, sessionId, legacy ? 1 : 2);
+    const interrupted = legacy ? false : hasActiveWork(parsed);
+    const state = legacy ? migrateLegacy(parsed) : restoreInterrupted(parsed);
+    assertState(state, sessionId);
     memorySessions.set(sessionId, structuredClone(state));
-    return { state, notice: interrupted ? '上次未结束的模拟任务已标记为中断，可在数据处理页手动重试。' : null, blocked: false };
+    return { state, notice: legacy ? '已升级旧版演示进度，核验记录和发布版本已保留。旧版未记录逐资料处理结果，资料状态按待处理重新统计，旧运行仅保留为历史记录。' : interrupted ? '上次未结束的模拟任务与目录扫描已标记为中断，自动扫描已暂停；可手动重试或重新启用。' : null, blocked: false };
   } catch {
     blockedSessions.add(sessionId);
     return { state: initial, notice: corrupt, blocked: true };

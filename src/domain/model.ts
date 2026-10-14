@@ -1,6 +1,9 @@
-import { PAGES, type DemoState, type DemoAction, type DemoSummary, type Field, type Role } from './types';
+import { PAGES, type DemoState, type DemoAction, type DemoSummary, type Field, type Role, type InventoryCounts, type InventorySummary, type AssetKind, type AssetProcessingStatus, type ScanRun } from './types';
+
+import { getScanCandidates, SCAN_ASSETS, SCAN_DIRECTORIES } from './scanning';
 
 const roles: Role[] = ['reviewer', 'manager', 'lead', 'operator'];
+const processingStatuses: AssetProcessingStatus[] = ['pending', 'processing', 'processed', 'failed', 'restricted'];
 const reviewedStatuses = new Set(['confirmed', 'corrected', 'missing']);
 export function isReviewed(field: Field): boolean { return reviewedStatuses.has(field.status); }
 function requireRole(state: DemoState, allowed: Role[]) {
@@ -27,7 +30,23 @@ export function getFieldBlockers(state: DemoState, fieldId: string): string[] {
   return blockers;
 }
 export function getSummary(state: DemoState): DemoSummary {
-  return { pending: state.fields.filter(field => !isReviewed(field)).length, critical: state.fields.filter(field => field.critical && !isReviewed(field)).length, reviewed: state.fields.filter(isReviewed).length, publishable: state.fields.filter(field => getFieldBlockers(state, field.id).length === 0).length, approved: state.snapshots.filter(snapshot => snapshot.status === 'approved').length, running: state.runs.some(run => run.status === 'running') };
+  return { pending: state.fields.filter(field => !isReviewed(field)).length, critical: state.fields.filter(field => field.critical && !isReviewed(field)).length, reviewed: state.fields.filter(isReviewed).length, publishable: state.fields.filter(field => getFieldBlockers(state, field.id).length === 0).length, approved: state.snapshots.filter(snapshot => snapshot.status === 'approved').length, running: state.runs.some(run => run.status === 'running'), inventory: getInventorySummary(state) };
+}
+function emptyCounts(): InventoryCounts { return { total: 0, pending: 0, processing: 0, processed: 0, failed: 0, restricted: 0 }; }
+export function getInventorySummary(state: DemoState): InventorySummary {
+  const counts = emptyCounts();
+  const byKind = Object.fromEntries(['text', 'table', 'wsi', 'image'].map(kind => [kind, emptyCounts()])) as Record<AssetKind, InventoryCounts>;
+  state.assets.forEach(asset => {
+    const status = state.assetProcessing[asset.id];
+    if (!processingStatuses.includes(status)) throw new Error('资料处理状态不完整。');
+    counts.total += 1; counts[status] += 1;
+    byKind[asset.kind].total += 1; byKind[asset.kind][status] += 1;
+  });
+  return { ...counts, byKind };
+}
+function scheduleNextScan(state: DemoState) {
+  if (state.scanConfig.autoEnabled && !state.scans.some(scan => scan.status === 'running')) state.scanConfig.nextScanAt = new Date(Date.now() + state.scanConfig.intervalSeconds * 1000).toISOString();
+  else delete state.scanConfig.nextScanAt;
 }
 export function exportSnapshot(state: DemoState, snapshotId: string): object {
   const snapshot = state.snapshots.find(item => item.id === snapshotId);
@@ -47,6 +66,10 @@ export function transition(state: DemoState, action: DemoAction): DemoState {
       if (action.patientId) {
         if (!next.patients.some(patient => patient.id === action.patientId)) throw new Error('未找到对应的演示研究对象。');
         next.selectedPatientId = action.patientId;
+      }
+      if (action.assetStatus !== undefined) {
+        if (action.assetStatus !== 'all' && !processingStatuses.includes(action.assetStatus)) throw new Error('不支持的资料处理状态筛选。');
+        next.assetFilter = action.assetStatus;
       }
       next.page = action.page;
       return next;
@@ -142,19 +165,20 @@ export function transition(state: DemoState, action: DemoAction): DemoState {
     case 'INTAKE':
       requireRole(next, ['manager']);
       next.intakeDone = true;
-      log(next, '确认合成资料接入', '固定演示批次 DEMO-B01 / 12 项目录；未读取或上传任何真实文件。');
+      log(next, '确认合成资料接入', `演示资料库 / ${next.assets.length} 项目录；未读取或上传任何真实文件。`);
       return next;
     case 'START_RUN': {
       requireRole(next, ['manager']);
       if (!next.intakeDone) throw new Error('请先在数据接入页确认合成批次。');
       if (next.runs.some(run => run.status === 'running')) throw new Error('已有演示任务运行中，请等待完成。');
-      if (action.retryOf) {
-        const prior = next.runs.find(run => run.id === action.retryOf);
-        if (!prior || !['failed', 'interrupted'].includes(prior.status)) throw new Error('只有失败或中断的任务可以重试。');
-      }
-      const run = { id: identify('DEMO-RUN'), status: 'running' as const, step: 0, fail: Boolean(action.fail), startedAt: new Date().toISOString(), ...(action.retryOf ? { retryOf: action.retryOf } : {}) };
+      const prior = action.retryOf ? next.runs.find(run => run.id === action.retryOf) : undefined;
+      if (action.retryOf && (!prior || !['failed', 'interrupted'].includes(prior.status))) throw new Error('只有失败或中断的任务可以重试。');
+      const assetIds = next.assets.filter(asset => asset.status === 'indexed' && ['pending', 'failed'].includes(next.assetProcessing[asset.id]) && (!prior || prior.legacy || prior.assetIds.includes(asset.id))).map(asset => asset.id);
+      if (!assetIds.length) throw new Error('当前没有待处理或可重试的资料，已处理和受限资料不会重复执行。');
+      const run = { id: identify('DEMO-RUN'), status: 'running' as const, step: 0, fail: Boolean(action.fail), assetIds, startedAt: new Date().toISOString(), ...(action.retryOf ? { retryOf: action.retryOf } : {}) };
+      assetIds.forEach(id => { next.assetProcessing[id] = 'processing'; });
       next.runs.unshift(run);
-      log(next, action.retryOf ? '重试演示任务' : '确认处理计划并模拟执行', `${run.id}${action.retryOf ? ` / 原任务 ${action.retryOf}` : ''}；不覆盖人工核验结果。`);
+      log(next, action.retryOf ? '重试演示任务' : '确认处理计划并模拟执行', `${run.id} / ${assetIds.length} 项资料${action.retryOf ? ` / 原任务 ${action.retryOf}` : ''}；输入范围已冻结，不覆盖人工核验结果。`);
       return next;
     }
     case 'ADVANCE_RUN': {
@@ -164,21 +188,98 @@ export function transition(state: DemoState, action: DemoAction): DemoState {
       if (run.fail && run.step === 2) {
         run.status = 'failed';
         run.finishedAt = new Date().toISOString();
-        log(next, '演示任务失败', `${run.id} / 模拟字段整理失败，可重试；人工核验保持不变。`);
+        run.assetIds.forEach(id => { if (next.assetProcessing[id] === 'processing') next.assetProcessing[id] = 'failed'; });
+        log(next, '演示任务失败', `${run.id} / ${run.assetIds.length} 项资料模拟字段整理失败，可重试；人工核验保持不变。`);
       } else if (run.step === 4) {
         run.status = 'completed';
         run.finishedAt = new Date().toISOString();
-        log(next, '演示任务完成', `${run.id} / 已完成模拟步骤；非真实模型或 GPU 执行结果。`);
+        run.assetIds.forEach(id => { if (next.assetProcessing[id] === 'processing') next.assetProcessing[id] = 'processed'; });
+        log(next, '演示任务完成', `${run.id} / ${run.assetIds.length} 项资料已完成模拟处理；非真实模型或 GPU 执行结果。`);
       }
       return next;
     }
-    case 'INTERRUPT_RUNS':
+    case 'CONFIGURE_SCAN': {
+      requireRole(next, ['manager']);
+      const config = action.config;
+      if (!config || typeof config !== 'object' || Object.keys(config).some(key => !['directoryId', 'recursive', 'autoEnabled', 'intervalSeconds'].includes(key))) throw new Error('不支持的扫描配置。');
+      if (config.directoryId !== undefined && !SCAN_DIRECTORIES.some(directory => directory.id === config.directoryId)) throw new Error('不支持的模拟扫描目录。');
+      if (config.recursive !== undefined && typeof config.recursive !== 'boolean') throw new Error('递归扫描配置错误。');
+      if (config.autoEnabled !== undefined && typeof config.autoEnabled !== 'boolean') throw new Error('自动扫描配置错误。');
+      if (config.intervalSeconds !== undefined && ![15, 30, 60].includes(config.intervalSeconds)) throw new Error('扫描间隔只能选择 15、30 或 60 秒。');
+      const active = next.scans.some(scan => scan.status === 'running');
+      if (active && (['directoryId', 'recursive', 'intervalSeconds'] as const).some(key => config[key] !== undefined && config[key] !== next.scanConfig[key])) throw new Error('扫描运行中不能修改目录、递归方式或间隔，请先停止扫描。');
+      next.scanConfig = { ...next.scanConfig, ...config };
+      scheduleNextScan(next);
+      log(next, '调整模拟扫描配置', `${next.scanConfig.directoryId} / ${next.scanConfig.recursive ? '含子目录' : '当前目录'} / 自动扫描${next.scanConfig.autoEnabled ? `每 ${next.scanConfig.intervalSeconds} 秒` : '关闭'}；无真实服务器访问。`);
+      return next;
+    }
+    case 'START_SCAN': {
+      const trigger = action.trigger ?? 'manual';
+      if (!['manual', 'automatic'].includes(trigger)) throw new Error('不支持的扫描触发方式。');
+      if (trigger === 'manual') requireRole(next, ['manager']);
+      else if (!next.scanConfig.autoEnabled || !next.scanConfig.nextScanAt || Date.parse(next.scanConfig.nextScanAt) > Date.now()) throw new Error('自动扫描尚未启用或尚未到达计划时间。');
+      if (next.scans.some(scan => scan.status === 'running')) throw new Error('已有目录扫描运行中，请等待完成或停止。');
+      const scan: ScanRun = { id: identify('DEMO-SCAN'), status: 'running', step: 0, trigger, directoryId: next.scanConfig.directoryId, recursive: next.scanConfig.recursive, startedAt: new Date().toISOString(), entries: [], importedAssetIds: [] };
+      next.scans.unshift(scan);
+      delete next.scanConfig.nextScanAt;
+      log(next, trigger === 'automatic' ? '定时模拟目录扫描' : '开始模拟目录扫描', `${scan.id} / ${scan.directoryId}；仅遍历固定合成清单，不访问实际文件系统。`);
+      return next;
+    }
+    case 'ADVANCE_SCAN': {
+      const scan = next.scans.find(item => item.id === action.scanId);
+      if (!scan || scan.status !== 'running') throw new Error('此目录扫描已结束或不存在。');
+      scan.step = (scan.step + 1) as ScanRun['step'];
+      if (scan.step === 4) {
+        scan.status = 'completed';
+        scan.finishedAt = new Date().toISOString();
+        scan.entries = getScanCandidates(scan.directoryId, scan.recursive).map(entry => entry.assetId && next.assets.some(asset => asset.id === entry.assetId) ? { ...entry, status: 'duplicate' as const, reason: '演示资料库中已有同一资料标识，跳过重复导入。' } : entry);
+        scheduleNextScan(next);
+        log(next, '模拟目录扫描完成', `${scan.id} / 扫描 ${scan.entries.length} 项，新增候选 ${scan.entries.filter(entry => entry.status === 'new').length} 项；等待用户确认导入。`);
+      }
+      return next;
+    }
+    case 'IMPORT_SCAN': {
+      requireRole(next, ['manager']);
+      const scan = next.scans.find(item => item.id === action.scanId);
+      if (!scan || scan.status !== 'completed') throw new Error('只能导入已完成扫描中的合成资料。');
+      const allowedIds = new Set(getScanCandidates(scan.directoryId, scan.recursive).filter(entry => entry.status === 'new').map(entry => entry.assetId));
+      const ids = [...new Set(scan.entries.filter(entry => entry.status === 'new' && entry.assetId && allowedIds.has(entry.assetId) && !next.assets.some(asset => asset.id === entry.assetId)).map(entry => entry.assetId!))];
+      if (!ids.length) return next;
+      ids.forEach(id => {
+        const asset = SCAN_ASSETS.find(item => item.id === id);
+        if (!asset) throw new Error('扫描结果包含不支持的资料引用。');
+        next.assets.push(structuredClone(asset));
+        next.assetProcessing[id] = 'pending';
+      });
+      scan.importedAssetIds = [...new Set([...scan.importedAssetIds, ...ids])];
+      next.intakeDone = true;
+      log(next, '确认导入扫描资料', `${scan.id} / ${ids.length} 项新增合成资料进入待处理队列；原有核验和已批准版本保持不变。`);
+      return next;
+    }
+    case 'STOP_SCAN': {
+      requireRole(next, ['manager']);
+      const scan = next.scans.find(item => item.id === action.scanId);
+      if (!scan || scan.status !== 'running') throw new Error('此目录扫描当前不在运行。');
+      scan.status = 'interrupted'; scan.finishedAt = new Date().toISOString();
+      scheduleNextScan(next);
+      log(next, '停止模拟目录扫描', `${scan.id} / 未导入任何未完成的扫描结果。`);
+      return next;
+    }
+    case 'INTERRUPT_RUNS': {
       next.runs.filter(run => run.status === 'running').forEach(run => {
-        run.status = 'interrupted';
-        run.finishedAt = new Date().toISOString();
+        run.status = 'interrupted'; run.finishedAt = new Date().toISOString();
+        run.assetIds.forEach(id => { if (next.assetProcessing[id] === 'processing') next.assetProcessing[id] = 'pending'; });
         log(next, '演示任务中断', `${run.id} / 页面关闭或重新载入后终止旧模拟，可手动重试。`);
       });
+      next.scans.filter(scan => scan.status === 'running').forEach(scan => {
+        scan.status = 'interrupted'; scan.finishedAt = new Date().toISOString();
+        log(next, '模拟目录扫描中断', `${scan.id} / 页面关闭、切换会话或刷新后停止。`);
+      });
+      if (next.scanConfig.autoEnabled) log(next, '暂停自动目录扫描', '会话离开或重新载入后暂停定时扫描，需数据管理员重新启用。');
+      next.scanConfig.autoEnabled = false;
+      delete next.scanConfig.nextScanAt;
       return next;
+    }
     default:
       throw new Error('不支持的演示操作。');
   }

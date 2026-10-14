@@ -47,7 +47,7 @@ describe('session persistence', () => {
     expect(saveSession(createInitialState('corrupt-json'))).toBeNull();
   });
   it.each([
-    ['version', (state: Record<string, any>) => { state.schemaVersion = 2; }],
+    ['version', (state: Record<string, any>) => { state.schemaVersion = 99; }],
     ['wrong-session', (state: Record<string, any>) => { state.sessionId = 'other'; }],
     ['reference', (state: Record<string, any>) => { state.fields[0].assetId = 'F-UNKNOWN'; }],
     ['selection', (state: Record<string, any>) => { state.selectedFieldIds = ['R-UNKNOWN']; }],
