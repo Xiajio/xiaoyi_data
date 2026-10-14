@@ -82,3 +82,9 @@ const bridge = createDataDemoHost({
 协议继续使用 `xiaoyi.data-demo/v1`，宿主初始化参数不变。`stateChanged.payload.summary.inventory` 新增资料统计对象，含 `total/pending/processing/processed/failed/restricted` 和按 `text/table/wsi/image` 类型拆分的 `byKind`。原有 `summary.pending` 仍表示待核验字段数，两种计数不能混用。
 
 扫描在工具页面内配置并运行，宿主桥不接收任意文件路径或真实患者资料。关闭／重开、切换会话与重置会清理旧计时器；加载会话时中断扫描并暂停自动扫描，由演示者再次启用。浏览器存储记录升级为 schemaVersion 2，沿用原会话存储键并迁移合法旧数据。
+
+## v0.3 医疗数据仪表台
+
+宿主用 `initialPage: 'overview'` 或 `bridge.navigate('overview')` 打开工作概览时，默认展示医疗数据仪表台；页面内可切换到「处理与运行」。七页标识、消息协议和会话缓存版本保持兼容。图表按当前会话的资料、逐资料处理状态和字段核验记录实时派生，不接受新的医疗数据输入。
+
+仪表台的研究对象筛选、图形选中和详情查看属于工具内部临时视图，不改变发布字段范围或 `stateChanged` 的统计口径；宿主摘要继续反映整个演示会话。详情中的病例／字段跳转仍使用既有页面导航。关闭重开后恢复业务进度，仪表台局部筛选恢复全体。

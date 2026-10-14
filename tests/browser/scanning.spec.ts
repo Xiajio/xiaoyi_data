@@ -31,6 +31,7 @@ async function navigate(surface:Surface,label:string) {
   if(!await sidebar.isVisible())await surface.getByLabel('切换导航').click();
   await sidebar.getByRole('button',{name:label,exact:true}).click();
   await expect(surface.getByRole('heading',{name:label,exact:true})).toBeVisible();
+  if(label==='工作概览')await surface.getByRole('button',{name:'处理与运行',exact:true}).click();
 }
 async function advanceUntil(page:Page,condition:()=>Promise<boolean>,description:string) {
   for(let step=0;step<16;step++){
