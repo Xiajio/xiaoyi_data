@@ -242,6 +242,8 @@ MCP server 与 catalog-service 共用数据库，对小亿灵析暴露五个工�
 
 **进度（2026-10-15，M2）**：M2 已完成开发并验证——新增 `enrichment / idea / pairing / snapshot` 四表（dataset 增量迁移 `source_modified_at`）；整理流水线离线解析卡片 frontmatter 产出 schema 摘要与质量信号候选（117/117 处理）；嵌入索引经 enrichment 表落地（HashEmbedder 冒烟 + bge-small-zh-v1.5 真实模型，镜像站下载可用）；混合检索为结构化硬过滤 + 余弦重排；配对提案只能落 pending，驳回联动快照失效；MCP server 按契约暴露五个工具（`mcp` 锁定 <2，v2 迁移留待后续）。集成链路"检索 → 提案 → 人工确认 → 冻结 → 审批 → 导出"在真实库上跑通，导出含许可清单与声明。灵析侧真实接入（思路卡出口）属灵析仓库改动，尚未进行。
 
+**进度（2026-10-15，M4）**：M4 灵析接线已完成并闭环验证——灵析侧在 academic-research 技能新增 `scripts/dataset_catalog.py`（search/evidence/propose/status，REST 调用，配置缺失即停，沿用 task-api.local.json 与 _bypass_proxy 约定）+ 参考文档 + SKILL.md 路由行 + 变更日志（11 项单测过，HTTP 全 mock）；目录服务新增 `POST /api/match`、`POST /api/pairings`（提案只落 pending 并留审计）、`GET /api/ideas/{id}/status` 三端点。对部署服务（10.10.70.12:5280）的真实闭环已跑通：脚本检索中文文本候选 → evidence 核证 → 提案落 pending → 策展 REST 确认 → 冻结 → 批准 → 导出（`idea_dataset_snapshot` V1，许可清单 ['mit']）→ status 回读 approved。未决项：灵析网关的技能文件同步属其个人环境部署（非本机账户），前端 ResearchIdea 与思路卡的结构打通留待后续。
+
 **进度（2026-10-15，M3）**：M3 已完成并端到端验收——新增 `review / audit` 留痕表与 FastAPI 目录服务（`/api/overview|datasets|review/enrichments|pairings|ideas|snapshots/*|runs|audit`）；演示版前端新增策展模式（`?mode=catalog`，构建期可用 `VITE_CATALOG_API` 固定），五个页面覆盖概览、数据目录、整理核验、配对与发布、运行审计，演示模式原样保留。验证：Python 侧 85 项测试（TestClient 覆盖全端点与错误路径）、前端 98 项单测、34 项浏览器测试（29 项演示回归 + 5 项策展链路：实时统计、目录筛选与证据、候选核验出队、配对确认→冻结→批准→导出、断网提示）全部通过。实施中修复：JSX 元素恒真值导致加载态短路（概览/详情空白）、Playwright webServer 的 Windows 路径与 fixture 建库时序、审批接口请求体模型误用。已知边界：MCP/REST 均无鉴权（内部测试约定）；策展模式暂无宿主嵌入入口。
 
 ## 11. 风险与开放问题

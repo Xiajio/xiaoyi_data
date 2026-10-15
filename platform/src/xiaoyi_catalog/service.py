@@ -19,9 +19,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import String, cast, func, or_, select
 
 from .db import create_engine_for, init_db, session_scope
+from .embeddings import SentenceTransformerEmbedder, TextEmbedder
+from .match import match_datasets, requirement_to_filter
 from .models import Audit, Dataset, DatasetVersion, Enrichment, Evidence, Idea, Pairing, Review, Run, Snapshot, utcnow
 from .pairing import (PairingError, approve_snapshot, export_snapshot, freeze_snapshot,
-                      review_pairing, snapshot_status)
+                      propose_pairing, review_pairing, snapshot_status)
 from .search import catalog_stats, dataset_to_dict
 
 DEFAULT_CORS = "http://localhost:5173,http://127.0.0.1:5173"
@@ -44,6 +46,21 @@ class ApproveIn(BaseModel):
     role: str = "lead"
 
 
+class MatchIn(BaseModel):
+    """智能体检索请求：requirements 为思路卡需求契约，query 为自由文本（有嵌入索引时参与语义排序）。"""
+
+    requirements: dict = Field(default_factory=dict)
+    query: str = ""
+
+
+class ProposeIn(BaseModel):
+    """智能体配对提案：idea 为思路卡（external_id/title/requirements 必填），提案一律落 pending。"""
+
+    idea: dict
+    dataset_version_ids: list[int]
+    rationale: str
+
+
 def _404(thing: str, ident: object) -> HTTPException:
     return HTTPException(status_code=404, detail=f"{thing} {ident} 不存在")
 
@@ -63,6 +80,22 @@ def create_app(db_path: str | None = None) -> FastAPI:
     init_db(engine)
     app = FastAPI(title="xiaoyi-catalog", version="0.2.0")
     app.state.db_path = path
+    # 语义排序可选：XIAOYI_CATALOG_EMBED=1 时懒加载嵌入模型（服务机默认关闭，避免重依赖）
+    app.state.embedder: TextEmbedder | None = None
+    app.state.embedder_disabled = os.environ.get("XIAOYI_CATALOG_EMBED", "0") != "1"
+
+    def service_embedder() -> TextEmbedder | None:
+        if app.state.embedder_disabled:
+            return None
+        if app.state.embedder is None:
+            try:
+                embedder = SentenceTransformerEmbedder(os.environ.get("XIAOYI_CATALOG_EMBED_MODEL", "BAAI/bge-small-zh-v1.5"))
+                embedder.embed(["预热"])
+                app.state.embedder = embedder
+            except Exception:
+                app.state.embedder_disabled = True
+                return None
+        return app.state.embedder
     origins = [origin.strip() for origin in os.environ.get("XIAOYI_CATALOG_CORS", DEFAULT_CORS).split(",") if origin.strip()]
     app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["*"])
 
@@ -174,6 +207,33 @@ def create_app(db_path: str | None = None) -> FastAPI:
                                "statement": idea.statement, "requirements": idea.requirements,
                                "source_refs": idea.source_refs,
                                "status": snapshot_status(session, idea.external_id)} for idea in items]}
+
+    @app.get("/api/ideas/{external_id}/status")
+    def idea_status(external_id: str) -> dict:
+        """智能体轮询入口：思路卡下的配对与快照状态（含驳回原因位置）。"""
+        with session_scope(engine) as session:
+            return snapshot_status(session, external_id)
+
+    @app.post("/api/match")
+    def match(body: MatchIn) -> dict:
+        """智能体检索：requirements 结构化硬过滤 + query 语义排序（嵌入模型未启用时按下载量）。"""
+        with session_scope(engine) as session:
+            return match_datasets(session, requirement_to_filter(body.requirements),
+                                  query_text=body.query, embedder=service_embedder())
+
+    @app.post("/api/pairings", status_code=201)
+    def propose(body: ProposeIn) -> dict:
+        """智能体提交配对提案：只落 pending，人工核验在策展 UI 完成。"""
+        with session_scope(engine) as session:
+            try:
+                result = propose_pairing(session, body.idea, body.dataset_version_ids, body.rationale,
+                                         proposed_by="agent")
+            except PairingError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            rejected = f"，{len(result['errors'])} 条版本引用被拒" if result["errors"] else ""
+            session.add(Audit(actor="agent", action="pairing_propose",
+                              detail=f"思路 {result['external_id']}：新增 {len(result['created'])} 条待核验配对{rejected}"))
+            return result
 
     @app.post("/api/snapshots/freeze")
     def freeze(body: FreezeIn) -> dict:

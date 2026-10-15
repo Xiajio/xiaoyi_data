@@ -116,3 +116,39 @@ class TestOpsEndpoints:
     def test_runs_listed(self, client):
         runs = client.get("/api/runs").json()["items"]
         assert runs and runs[0]["status"] == "completed" and runs[0]["stats"]["new"] == 2
+
+
+class TestAgentEndpoints:
+    def test_match_filters_by_requirements_and_degrades_without_embedder(self, client):
+        response = client.post("/api/match", json={"requirements": {"modalities": ["text"]}, "query": "情感"})
+        payload = response.json()
+        assert response.status_code == 200 and payload["ranking"] == "downloads"  # 服务默认不启用嵌入模型
+        assert [item["source_key"] for item in payload["results"]] == ["a/zh-sentiment"]
+        empty = client.post("/api/match", json={"requirements": {"modalities": ["3d"]}}).json()
+        assert empty["results"] == []
+
+    def test_propose_creates_pending_pairing_with_audit(self, client):
+        version_id = _version_id(client, 1)
+        response = client.post("/api/pairings", json={
+            "idea": {"external_id": "agent-idea-1", "title": "智能体提案测试",
+                     "requirements": {"modalities": ["text"]}, "source_refs": ["10.0/t"]},
+            "dataset_version_ids": [version_id], "rationale": "覆盖目标模态"})
+        assert response.status_code == 201
+        assert response.json()["created"][0]["status"] == "pending"
+        status = client.get("/api/ideas/agent-idea-1/status").json()
+        assert status["pairings"][0]["proposed_by"] == "agent"
+        actions = [item["action"] for item in client.get("/api/audit").json()["items"]]
+        assert "pairing_propose" in actions
+
+    def test_propose_validation_errors(self, client):
+        bad_idea = client.post("/api/pairings", json={"idea": {"title": "缺 id"}, "dataset_version_ids": [1],
+                                                      "rationale": "x"})
+        assert bad_idea.status_code == 400
+        missing_version = client.post("/api/pairings", json={
+            "idea": {"external_id": "agent-idea-2", "title": "t", "requirements": {"modalities": ["text"]}},
+            "dataset_version_ids": [999], "rationale": "x"})
+        assert missing_version.status_code == 400
+        assert "999" in missing_version.json()["detail"]
+
+    def test_idea_status_unknown_is_empty_shape(self, client):
+        assert client.get("/api/ideas/no-such/status").json() == {"idea": None, "pairings": [], "snapshots": []}
