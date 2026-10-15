@@ -139,7 +139,7 @@ export function App() {
     <a className="skip-link" href="#workspace-content">跳到工作区</a>
     <aside className={`sidebar ${mobileNav?'is-open':''}`} aria-label="工具导航">
       {!config.embedded && <a href="#/overview" className="brand" onClick={event=>{event.preventDefault();dispatch({type:'NAVIGATE',page:'overview'});}}><span className="brand-emblem"><Database size={22}/></span><span><strong>小亿数据</strong><small>科研资料工作台</small></span></a>}
-      <div className="project-card"><span className="project-mark">肠</span><div><strong>肠道肿瘤科研</strong><small>首期数据整理 · DEMO-01</small></div></div>
+      <div className="project-card"><span className="project-mark">数</span><div><strong>多类型数据整理</strong><small>首期数据整理 · DEMO-01</small></div></div>
       <div className="nav-caption">工作空间</div>
       <nav>{PAGES.map((page,index)=>{const Icon=ICONS[page];return <button key={page} className={`nav-item ${state.page===page?'active':''} ${index===6?'nav-separated':''}`} aria-label={PAGE_LABELS[page]} aria-current={state.page===page?'page':undefined} onClick={()=>dispatch({type:'NAVIGATE',page})}><Icon size={18}/><span>{PAGE_LABELS[page]}</span>{page==='review'&&summary.pending>0?<span className="nav-count">{summary.pending}</span>:null}</button>;})}</nav>
       <div className="sidebar-bottom"><div className="local-indicator"><i/>合成资料 · 本地演示</div><p>从资料到证据<br/>每一步都有记录</p>{!config.embedded && <a href="./host.html" target="_blank" rel="noreferrer">查看宿主接入示例 <ArrowUpRight size={14}/></a>}</div>
@@ -152,7 +152,7 @@ export function App() {
       <div className="demo-strip"><span className="demo-tag">演示环境</span><span>全部资料均为虚构示例</span><span className="demo-strip-detail">用于演示整理、核验与版本发布流程</span><span className="session-status"><i/> {saveNotice?'仅本次有效':loaded.blocked?'缓存待重置':'进度自动保存在本机'}</span></div>
       {notice && <div className="storage-notice" role="alert">{notice}{loaded.blocked&&<button className="btn small" onClick={()=>resetDialog.current?.showModal()}>重置此演示会话</button>}</div>}
       <main id="workspace-content" tabIndex={-1} className="workspace-content"><Pages key={`${state.sessionId}:${viewEpoch}`} state={state} dispatch={dispatch} onExport={onExport}/></main>
-      <footer className="workspace-footer"><span>小亿数据 <span className="version">v0.3</span></span><span>DEMO-B01 · {state.patients.length} 名研究对象 · {state.assets.length} 项合成资料</span><span>本地演示，未连接医院或模型服务</span></footer>
+      <footer className="workspace-footer"><span>小亿数据 <span className="version">v0.3</span></span><span>DEMO-B01 · {state.patients.length} 名研究对象 · {state.assets.length} 项合成资料</span><span>本地演示，未连接外部服务或模型</span></footer>
     </div>
     <div className={`toast ${message?'visible':''}`} role="status" aria-live="polite">{message}</div>
     <dialog className="reset-dialog" ref={resetDialog}><form method="dialog"><div className="dialog-icon"><RotateCcw size={23}/></div><h2>重新开始这次演示？</h2><p>当前会话的核验、模拟任务和发布版本将恢复到初始示例。其他演示会话不受影响。</p><div className="dialog-actions"><button className="btn" value="cancel">保留进度</button><button className="btn primary" type="button" onClick={reset}>确认重置</button></div></form></dialog>

@@ -75,7 +75,7 @@ function assertState(value: unknown, sessionId: string, expectedVersion: 1|2 = 2
     if (field.critical && field.status === 'confirmed') throw new Error('关键问题不可直接确认');
     if (field.status === 'missing') ensure(field.id === 'R-04' && ['未记录', '资料不足', '未记录（已核查本批次资料）'].includes(field.value), '缺失值错误');
     if (field.id === 'R-02' && field.status === 'corrected') ensure(field.value === '2026-03-05', '演示报告日期错误');
-    if (field.id === 'R-03' && field.status === 'corrected') ensure(['计划', '计划／未见实施记录', '计划，未提供实施记录'].includes(field.value), '演示治疗状态错误');
+    if (field.id === 'R-03' && field.status === 'corrected') ensure(['计划', '计划／未见执行记录', '计划，未提供执行记录'].includes(field.value), '演示任务状态错误');
     return field as unknown as Field;
   };
   const fields = list(state.fields, 6).map(validateField);

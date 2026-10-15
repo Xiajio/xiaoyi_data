@@ -84,7 +84,7 @@ test('production assets work under /demo/ for standalone and host lifecycle with
   await expect(frame.getByRole('heading',{name:'工作概览',exact:true})).toBeVisible();
   await page.locator('#theme').selectOption('dark');await expect(frame.locator('html')).toHaveAttribute('data-theme','dark');
   await page.locator('#page').selectOption('cases');await page.locator('#navigate').click();
-  await expect(frame.getByRole('heading',{name:'病例资料库',exact:true})).toBeVisible();
+  await expect(frame.getByRole('heading',{name:'对象资料库',exact:true})).toBeVisible();
   const first=await currentInstance(page);expect(first).not.toBe('');
   await page.locator('#toggle').click();await expect(page.locator('#frame-slot iframe')).toHaveCount(0);
   await page.locator('#toggle').click();await hostReady(page);
@@ -119,7 +119,7 @@ for (const width of [1600,1050,520]) {
     await expect(frame.getByRole('heading',{name:'数据集与发布',exact:true})).toBeVisible();
     await noToolOverflow(frame,width);
     await frame.getByTestId('select-eligible').click();
-    await expect(frame.getByLabel('选择字段 治疗事件状态 R-03')).not.toBeChecked();
+    await expect(frame.getByLabel('选择字段 训练任务状态 R-03')).not.toBeChecked();
     await expect(frame.getByTestId('freeze-snapshot')).toBeEnabled();
     await frame.getByTestId('freeze-snapshot').click();
     await expect(frame.getByTestId(/^export-/).first()).toBeDisabled();

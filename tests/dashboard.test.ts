@@ -20,7 +20,7 @@ function deepFreeze(value: unknown): void {
 }
 
 describe('research dashboard derived statistics', () => {
-  it('uses patients, asset records and candidate fields as separate denominators', () => {
+  it('uses subjects, asset records and candidate fields as separate denominators', () => {
     const data = getResearchDashboard(initial());
     expect(data.scope).toEqual({ patients: 4, assets: 12, fields: 6 });
     expect(data.inventory).toMatchObject({ total: 12, pending: 10, processing: 0, processed: 0, failed: 0, restricted: 2 });
@@ -30,7 +30,7 @@ describe('research dashboard derived statistics', () => {
     expect(FIELD_STATUSES.reduce((sum, status) => sum + data.review.byStatus[status], 0)).toBe(data.scope.fields);
   });
 
-  it('counts one covered patient per type even with multiple records, including separately flagged restricted assets', () => {
+  it('counts one covered subject per type even with multiple records, including separately flagged restricted assets', () => {
     const data = getResearchDashboard(initial());
     expect(data.typeCoverage.map(row => row.kind)).toEqual(ASSET_KINDS);
     expect(data.typeCoverage.map(row => row.patients)).toEqual([4, 3, 2, 2]);
@@ -45,22 +45,22 @@ describe('research dashboard derived statistics', () => {
     expect(data.coverage.find(row => row.patientId === 'P-DEMO-004')!.cells.find(cell => cell.kind === 'image')).toEqual({ kind: 'image', assetIds: [], total: 0, restricted: 0 });
   });
 
-  it('groups by source asset month in calendar order without interpreting patient events or field timestamps', () => {
+  it('groups by source asset month in calendar order without interpreting subject events or field timestamps', () => {
     const state = initial();
     state.assets.reverse();
     state.patients[0].events[0].date = '2099-01-01';
     state.fields[0].eventTime = '2099-01-01';
     const months = getResearchDashboard(state).months;
     expect(months.map(row => [row.month, row.total])).toEqual([['2026-02', 2], ['2026-03', 5], ['2026-04', 3], ['2026-05', 2]]);
-    expect(months[0].byKind).toEqual({ text: 1, table: 0, wsi: 1, image: 0 });
-    expect(months[1].byKind).toEqual({ text: 2, table: 1, wsi: 1, image: 1 });
+    expect(months[0].byKind).toEqual({ text: 1, table: 0, '3d': 1, image: 0 });
+    expect(months[1].byKind).toEqual({ text: 2, table: 1, '3d': 1, image: 1 });
     for (const month of months) {
       expect(month.assetIds).toHaveLength(month.total);
       expect(Object.values(month.byKind).reduce((sum, count) => sum + count, 0)).toBe(month.total);
     }
   });
 
-  it('does not count discovered candidates until explicit import and adds coverage without inventing patients or fields', () => {
+  it('does not count discovered candidates until explicit import and adds coverage without inventing subjects or fields', () => {
     let state = completeScan(manager());
     expect(getResearchDashboard(state).scope).toEqual({ patients: 4, assets: 12, fields: 6 });
     state = transition(state, { type: 'IMPORT_SCAN', scanId: state.scans[0].id });
@@ -76,8 +76,8 @@ describe('research dashboard derived statistics', () => {
 
   it('treats documented missingness as reviewed while retaining its own count and closes only the reviewed critical issues', () => {
     const state = apply(initial(),
-      { type: 'REVIEW', fieldId: 'R-04', decision: 'missing', note: '随访记录未提供复发信息，保留缺失。' },
-      { type: 'REVIEW', fieldId: 'R-02', decision: 'correct', value: '2026-03-05', note: '对照报告签发日期修正科研表原值。' },
+      { type: 'REVIEW', fieldId: 'R-04', decision: 'missing', note: '评估记录未提供结论信息，保留缺失。' },
+      { type: 'REVIEW', fieldId: 'R-02', decision: 'correct', value: '2026-03-05', note: '对照报告签发日期修正登记表原值。' },
       { type: 'REVIEW', fieldId: 'R-01', decision: 'confirm' },
     );
     const data = getResearchDashboard(state);
@@ -93,8 +93,8 @@ describe('research dashboard derived statistics', () => {
 
   it('includes needs-info and rejected in incomplete review and unresolved critical totals', () => {
     const state = apply(initial(),
-      { type: 'REVIEW', fieldId: 'R-02', decision: 'needs-info', note: '等待核对报告与科研表日期。' },
-      { type: 'REVIEW', fieldId: 'R-03', decision: 'reject', note: '现有记录仅有计划，没有治疗实施依据。' },
+      { type: 'REVIEW', fieldId: 'R-02', decision: 'needs-info', note: '等待核对报告与登记表日期。' },
+      { type: 'REVIEW', fieldId: 'R-03', decision: 'reject', note: '现有记录仅有计划，没有训练执行依据。' },
     );
     expect(getResearchDashboard(state).review).toMatchObject({ reviewed: 1, pending: 5, critical: 3, byStatus: { pending: 3, 'needs-info': 1, rejected: 1 } });
   });
@@ -120,7 +120,7 @@ describe('research dashboard derived statistics', () => {
     expect(getResearchDashboard(state).inventory).toMatchObject({ pending: 10, failed: 0, processing: 0, processed: 0 });
   });
 
-  it('filters every chart and drill-down reference to the chosen patient', () => {
+  it('filters every chart and drill-down reference to the chosen subject', () => {
     const data = getResearchDashboard(initial(), 'P-DEMO-002');
     expect(data.scope).toEqual({ patients: 1, assets: 3, fields: 1 });
     expect(data.patients.map(patient => patient.id)).toEqual(['P-DEMO-002']);
@@ -130,13 +130,13 @@ describe('research dashboard derived statistics', () => {
     expect(data.coverage.map(row => row.patientId)).toEqual(['P-DEMO-002']);
     expect(data.typeCoverage.map(row => row.patients)).toEqual([1, 1, 0, 1]);
     expect(data.typeCoverage.map(row => row.totalPatients)).toEqual([1, 1, 1, 1]);
-    expect(data.months).toEqual([{ month: '2026-04', total: 3, assetIds: ['F-006', 'F-007', 'F-008'], byKind: { text: 1, table: 1, wsi: 0, image: 1 } }]);
+    expect(data.months).toEqual([{ month: '2026-04', total: 3, assetIds: ['F-006', 'F-007', 'F-008'], byKind: { text: 1, table: 1, '3d': 0, image: 1 } }]);
     expect(data.review).toMatchObject({ total: 1, reviewed: 0, pending: 1, critical: 1, missing: 0, byPatient: [{ patientId: 'P-DEMO-002', total: 1, reviewed: 0, critical: 1 }] });
     const assetIds = new Set(data.assets.map(asset => asset.id));
     for (const row of [...data.coverage.flatMap(row => row.cells), ...data.typeCoverage, ...data.months]) expect(row.assetIds.every(id => assetIds.has(id))).toBe(true);
   });
 
-  it.each(['unknown-patient', ''])('returns a defined empty scope for an unknown explicit patient %s', patientId => {
+  it.each(['unknown-patient', ''])('returns a defined empty scope for an unknown explicit subject %s', patientId => {
     const data = getResearchDashboard(initial(), patientId);
     expect(data.scope).toEqual({ patients: 0, assets: 0, fields: 0 });
     expect(data.patients).toEqual([]);
@@ -161,7 +161,7 @@ describe('research dashboard derived statistics', () => {
   it('is deterministic and never mutates the input state, evidence, or nested review history', () => {
     let state = completeScan(manager());
     state = transition(state, { type: 'IMPORT_SCAN', scanId: state.scans[0].id });
-    state = apply(state, { type: 'SET_ROLE', role: 'reviewer' }, { type: 'REVIEW', fieldId: 'R-04', decision: 'missing', note: '已查本批资料，没有对应随访信息。' });
+    state = apply(state, { type: 'SET_ROLE', role: 'reviewer' }, { type: 'REVIEW', fieldId: 'R-04', decision: 'missing', note: '已查本批资料，没有对应评估信息。' });
     const before = structuredClone(state);
     deepFreeze(state);
     const data = getResearchDashboard(state);

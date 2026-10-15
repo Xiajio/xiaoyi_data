@@ -54,7 +54,7 @@ test('complete intake, simulated execution, evidence review, frozen version and 
   await page.reload();await expect(page.getByTestId(/^export-/).first()).toBeVisible();
   expect((await saved(page)).snapshots[0]).toEqual(approved);
   await page.getByLabel('演示角色').selectOption('reviewer');
-  await navigate(page,'核验工作台');await review(page,'R-01','correct','乙状结肠（原文复核）');
+  await navigate(page,'核验工作台');await review(page,'R-01','correct','实验室内部采集（原文复核）');
   expect((await saved(page)).snapshots[0]).toEqual(approved);
   await navigate(page,'数据集与发布');
   await page.getByTestId('freeze-snapshot').click();
@@ -110,7 +110,7 @@ for(const viewport of [{width:1600,height:1000},{width:1050,height:900},{width:5
  test(`seven pages and keyboard review at ${viewport.width}px`,async({page})=>{
   await page.setViewportSize(viewport);await page.goto('/');
   const requests:string[]=[];page.on('request',request=>{if(!request.url().startsWith('http://127.0.0.1:4173'))requests.push(request.url());});
-  for(const label of ['工作概览','数据接入','数据处理','核验工作台','病例资料库','数据集与发布','运行与审计']){
+  for(const label of ['工作概览','数据接入','数据处理','核验工作台','对象资料库','数据集与发布','运行与审计']){
     if(!await page.locator('.sidebar').isVisible())await page.getByLabel('切换导航').click();
     await navigate(page,label);await expect(page.getByRole('heading',{name:label,exact:true})).toBeVisible();
     const overflow=await page.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,elements:[...document.querySelectorAll('*')].filter(el=>el.getBoundingClientRect().right>innerWidth+1).slice(0,12).map(el=>({tag:el.tagName,cls:el.className,right:el.getBoundingClientRect().right}))}));
@@ -135,17 +135,18 @@ for(const viewport of [{width:1600,height:1000},{width:1050,height:900},{width:5
 
 
 
+
 test('conflicting source tables remain discoverable in issue filters and locate their evidence',async({page})=>{
   await page.goto('/');
   await page.getByLabel('资料类型').selectOption('table');
   await page.getByRole('button',{name:'仅看问题',exact:true}).click();
-  await page.getByRole('button',{name:'科研登记表_001.csv',exact:true}).click();
-  await expect(page.getByRole('heading',{name:'病理报告日期',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'数据登记表_001.csv',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'报告签发日期',exact:true})).toBeVisible();
   await expect(page.locator('.pp-evidence')).toContainText('Sheet1 / D2');
   await navigate(page,'数据处理');
   await page.getByLabel('资料类型').selectOption('table');
   await page.getByRole('button',{name:'仅看问题',exact:true}).click();
-  await page.getByRole('button',{name:'随访登记表_004.xlsx',exact:true}).click();
-  await expect(page.getByRole('heading',{name:'随访复发信息状态',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'评估登记表_004.xlsx',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'质量评估结论状态',exact:true})).toBeVisible();
   await expect(page.locator('.pp-evidence')).toContainText('Sheet1 / E2');
 });

@@ -24,9 +24,9 @@ export function getFieldBlockers(state: DemoState, fieldId: string): string[] {
   if (!patient) return ['研究对象关联不存在'];
   const blockers: string[] = [];
   if (!isReviewed(field)) blockers.push(field.status === 'needs-info' ? '字段仍待补充资料' : field.status === 'rejected' ? '字段候选已驳回，待重新核验' : '字段未完成人工核验');
-  if (!patient.associationPassed) blockers.push('患者与事件关联检查未通过');
-  if (!patient.privacyPassed) blockers.push('患者隐私检查未完成');
-  if (state.fields.some(item => item.patientId === patient.id && item.critical && !isReviewed(item))) blockers.push('同一患者的关键问题尚未闭环');
+  if (!patient.associationPassed) blockers.push('对象资料关联检查未通过');
+  if (!patient.privacyPassed) blockers.push('对象脱敏检查未完成');
+  if (state.fields.some(item => item.patientId === patient.id && item.critical && !isReviewed(item))) blockers.push('同一对象的关键问题尚未闭环');
   return blockers;
 }
 export function getSummary(state: DemoState): DemoSummary {
@@ -35,7 +35,7 @@ export function getSummary(state: DemoState): DemoSummary {
 function emptyCounts(): InventoryCounts { return { total: 0, pending: 0, processing: 0, processed: 0, failed: 0, restricted: 0 }; }
 export function getInventorySummary(state: DemoState): InventorySummary {
   const counts = emptyCounts();
-  const byKind = Object.fromEntries(['text', 'table', 'wsi', 'image'].map(kind => [kind, emptyCounts()])) as Record<AssetKind, InventoryCounts>;
+  const byKind = Object.fromEntries(['text', 'table', '3d', 'image'].map(kind => [kind, emptyCounts()])) as Record<AssetKind, InventoryCounts>;
   state.assets.forEach(asset => {
     const status = state.assetProcessing[asset.id];
     if (!processingStatuses.includes(status)) throw new Error('资料处理状态不完整。');
@@ -51,7 +51,7 @@ function scheduleNextScan(state: DemoState) {
 export function exportSnapshot(state: DemoState, snapshotId: string): object {
   const snapshot = state.snapshots.find(item => item.id === snapshotId);
   if (!snapshot || snapshot.status !== 'approved') throw new Error('只能导出已批准的演示快照。');
-  return structuredClone({ schemaVersion: 1, type: 'synthetic_field_subset', disclaimer: '全部为虚构演示数据，不可用于真实科研或诊疗。', sessionId: state.sessionId, snapshotId: snapshot.id, version: snapshot.version, createdAt: snapshot.createdAt, approvedAt: snapshot.approvedAt, note: snapshot.note, fieldIds: snapshot.fieldIds, fields: snapshot.fields });
+  return structuredClone({ schemaVersion: 1, type: 'synthetic_field_subset', disclaimer: '全部为虚构演示数据，不可用于真实科研结论。', sessionId: state.sessionId, snapshotId: snapshot.id, version: snapshot.version, createdAt: snapshot.createdAt, approvedAt: snapshot.approvedAt, note: snapshot.note, fieldIds: snapshot.fieldIds, fields: snapshot.fields });
 }
 export function transition(state: DemoState, action: DemoAction): DemoState {
   const next = structuredClone(state);
@@ -99,8 +99,8 @@ export function transition(state: DemoState, action: DemoAction): DemoState {
         const value = action.value?.trim();
         if (!value) throw new Error('请填写修正后的值。');
         if (field.id === 'R-02' && value !== '2026-03-05') throw new Error('此演示原文的报告日期为 2026-03-05，请按原文修正。');
-        if (field.id === 'R-03' && !['计划', '计划／未见实施记录', '计划，未提供实施记录'].includes(value)) throw new Error('此演示仅能确认“计划”，没有治疗实施依据。');
-        if (field.id === 'R-04' && !['未记录', '资料不足', '未记录（已核查本批次资料）'].includes(value)) throw new Error('此演示缺少复发状态依据，请保留“未记录”或“资料不足”。');
+        if (field.id === 'R-03' && !['计划', '计划／未见执行记录', '计划，未提供执行记录'].includes(value)) throw new Error('此演示仅能确认“计划”，没有训练执行依据。');
+        if (field.id === 'R-04' && !['未记录', '资料不足', '未记录（已核查本批次资料）'].includes(value)) throw new Error('此演示缺少评估结论依据，请保留“未记录”或“资料不足”。');
         field.value = value;
         field.status = field.id === 'R-04' ? 'missing' : 'corrected';
         field.reviewNote = note;

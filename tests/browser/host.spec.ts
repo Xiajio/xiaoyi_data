@@ -42,7 +42,7 @@ test('host controls theme, deep links, saved A→B→A sessions, reopen, reset a
   const frame = page.frameLocator('#frame-slot iframe');
   await expect(frame.getByRole('heading',{name:'工作概览',exact:true})).toBeVisible();
   await page.locator('#theme').selectOption('dark');await expect(frame.locator('html')).toHaveAttribute('data-theme','dark');
-  await navigate(page,'cases');await expect(frame.getByRole('heading',{name:'病例资料库',exact:true})).toBeVisible();
+  await navigate(page,'cases');await expect(frame.getByRole('heading',{name:'对象资料库',exact:true})).toBeVisible();
   await confirmFirstField(page);
   const firstInstance = await instance(page);
   await page.locator('#session').click();await ready(page,'demo-host-002');

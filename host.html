@@ -8,11 +8,11 @@
 </style>
 </head>
 <body>
-<header class="header"><div><div class="badge">XIAOYI / EMBEDDING LAB</div><div class="brand">数据处理工作台 · 宿主示例</div><div class="subtitle">独立页面装载，可验证的主题、会话与导航交互</div></div><p>此页模拟宿主容器。内部数据均为合成案例；导出结果只供演示，工具不会接入院内系统。</p></header>
+<header class="header"><div><div class="badge">XIAOYI / EMBEDDING LAB</div><div class="brand">数据处理工作台 · 宿主示例</div><div class="subtitle">独立页面装载，可验证的主题、会话与导航交互</div></div><p>此页模拟宿主容器。内部数据均为合成案例；导出结果只供演示，工具不会接入真实业务系统。</p></header>
 <nav class="controls" aria-label="宿主控制">
 <button id="toggle" class="primary">关闭工具</button><button id="reopen">重开 iframe</button><span class="divider"></span>
 <label>主题<select id="theme"><option value="light">浅色</option><option value="dark">深色</option></select></label>
-<label>定位<select id="page"><option value="overview">工作概览</option><option value="intake">数据接入</option><option value="processing">数据处理</option><option value="review">核验工作台</option><option value="cases">病例资料库</option><option value="publish">数据集与发布</option><option value="audit">运行与审计</option></select></label>
+<label>定位<select id="page"><option value="overview">工作概览</option><option value="intake">数据接入</option><option value="processing">数据处理</option><option value="review">核验工作台</option><option value="cases">对象资料库</option><option value="publish">数据集与发布</option><option value="audit">运行与审计</option></select></label>
 <button id="navigate">打开页面</button><button id="field">定位字段 R-01</button><span class="divider"></span><button id="session">切换新会话</button><button id="previous-session">返回上一会话</button><button id="reset">重置演示</button><span id="status" class="status" role="status">正在连接…</span>
 </nav>
 <main class="layout"><section class="frame" id="frame-slot" aria-label="数据工具容器"></section><aside class="side"><div class="side-head"><h1>桥接事件</h1><button id="clear-log">清空</button></div><p>关闭再打开会产生新的实例 ID。宿主切换会话时，旧会话指令不再生效。</p><div id="connection" class="meta">等待工具就绪</div><h2>最近一次导出</h2><p>在工具内完成核验、冻结与审批，再点击导出；宿主在这里接收事件。</p><textarea id="export-output" readonly aria-label="最近一次导出事件" placeholder="尚未收到导出事件"></textarea><button id="download-export" disabled style="margin-top:8px;width:100%">下载演示 JSON</button><h2>事件记录</h2><div id="events" aria-live="polite"></div></aside></main>

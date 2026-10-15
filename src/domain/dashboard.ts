@@ -1,7 +1,7 @@
 import { getInventorySummary, isReviewed } from './model';
 import type { Asset, AssetKind, AssetProcessingStatus, DemoState, Field, FieldStatus, InventorySummary, Patient } from './types';
 
-export const ASSET_KINDS = ['text', 'table', 'wsi', 'image'] as const satisfies readonly AssetKind[];
+export const ASSET_KINDS = ['text', 'table', '3d', 'image'] as const satisfies readonly AssetKind[];
 export const PROCESSING_STATUSES = ['pending', 'processing', 'processed', 'failed', 'restricted'] as const satisfies readonly AssetProcessingStatus[];
 export const FIELD_STATUSES = ['pending', 'confirmed', 'corrected', 'missing', 'needs-info', 'rejected'] as const satisfies readonly FieldStatus[];
 
@@ -29,10 +29,10 @@ export interface ResearchDashboard {
   };
 }
 
-const emptyKinds = (): Record<AssetKind, number> => ({ text: 0, table: 0, wsi: 0, image: 0 });
+const emptyKinds = (): Record<AssetKind, number> => ({ text: 0, table: 0, '3d': 0, image: 0 });
 const unresolvedCritical = (field: Field) => field.critical && !isReviewed(field);
 
-/** Counts current synthetic records only; source dates are not clinical event dates. */
+/** Counts current synthetic records only; source dates are not experiment event dates. */
 export function getResearchDashboard(state: DemoState, patientId?: string): ResearchDashboard {
   const patients = state.patients.filter(patient => patientId === undefined || patient.id === patientId);
   const patientIds = new Set(patients.map(patient => patient.id));

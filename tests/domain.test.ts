@@ -7,13 +7,13 @@ function apply(state: DemoState, ...actions: DemoAction[]) { return actions.redu
 function ready() {
   return apply(createInitialState('domain-test'),
     { type: 'REVIEW', fieldId: 'R-01', decision: 'confirm' },
-    { type: 'REVIEW', fieldId: 'R-02', decision: 'correct', value: '2026-03-05', note: '依据 F-001 第 5 行报告日期，保留取材日期。' },
+    { type: 'REVIEW', fieldId: 'R-02', decision: 'correct', value: '2026-03-05', note: '依据 F-001 第 5 行签发日期，保留采集日期。' },
     { type: 'REVIEW', fieldId: 'R-04', decision: 'missing', note: '核查 F-011 与 F-012，本批资料未明确记载。' },
     { type: 'SELECT_FIELDS', ids: ['R-01', 'R-02', 'R-04', 'R-06'] });
 }
 
 describe('synthetic seed and evidence', () => {
-  it('creates independent four-patient, twelve-asset, six-field sessions', () => {
+  it('creates independent four-subject, twelve-asset, six-field sessions', () => {
     const first = createInitialState('first');
     const second = createInitialState('second');
     expect(first.patients).toHaveLength(4);
@@ -21,21 +21,21 @@ describe('synthetic seed and evidence', () => {
     expect(first.fields).toHaveLength(6);
     expect(getSummary(first)).toMatchObject({ pending: 5, critical: 3, reviewed: 1, publishable: 1, approved: 0, running: false });
     first.fields[0].value = 'changed';
-    expect(second.fields[0].value).toBe('乙状结肠');
+    expect(second.fields[0].value).toBe('实验室内部采集');
     expect(second.fields[1].evidence).toContain('2026年03月05日');
   });
   it('links conflicting tables as related sources and preserves them in frozen exports', () => {
     const seed = createInitialState('sources');
     expect(seed.fields.find(field => field.id === 'R-02')?.relatedAssetIds).toEqual(['F-003']);
     expect(seed.fields.find(field => field.id === 'R-04')?.relatedAssetIds).toEqual(['F-012']);
-    expect(seed.fields.find(field => field.id === 'R-04')?.evidence).toContain('E2「随访复发信息状态」原值为“无复发”');
+    expect(seed.fields.find(field => field.id === 'R-04')?.evidence).toContain('E2「质量评估结论状态」原值为“无异常”');
     let state = transition(ready(), { type: 'FREEZE' });
     state = transition(state, { type: 'SET_ROLE', role: 'lead' });
     state = transition(state, { type: 'APPROVE', snapshotId: state.snapshots[0].id });
     const exported = exportSnapshot(state, state.snapshots[0].id) as { fields: DemoState['fields'] };
     expect(exported.fields.find(field => field.id === 'R-02')?.relatedAssetIds).toEqual(['F-003']);
     expect(exported.fields.find(field => field.id === 'R-04')).toMatchObject({ relatedAssetIds: ['F-012'], value: '未记录' });
-    expect(exported.fields.find(field => field.id === 'R-04')?.evidence).toContain('本批随访原文没有支持这一阴性结局的明确记载');
+    expect(exported.fields.find(field => field.id === 'R-04')?.evidence).toContain('本批评估原文没有支持这一结论的明确记载');
     exported.fields.find(field => field.id === 'R-02')!.relatedAssetIds!.push('F-001');
     expect(state.snapshots[0].fields.find(field => field.id === 'R-02')?.relatedAssetIds).toEqual(['F-003']);
   });
@@ -54,28 +54,28 @@ describe('review and publication quality gates', () => {
     expect(() => transition(initial, { type: 'REVIEW', fieldId: 'R-02', decision: 'confirm' })).toThrow('关键问题');
     expect(() => transition(initial, { type: 'REVIEW', fieldId: 'R-04', decision: 'missing' })).toThrow('说明');
     expect(() => transition({ ...initial, role: 'manager' }, { type: 'REVIEW', fieldId: 'R-01', decision: 'confirm' })).toThrow('角色');
-    expect(() => transition(initial, { type: 'REVIEW', fieldId: 'R-03', decision: 'correct', value: '已实施', note: '猜测' })).toThrow('没有治疗实施依据');
-    expect(() => transition(initial, { type: 'REVIEW', fieldId: 'R-04', decision: 'correct', value: '无复发', note: '猜测' })).toThrow('缺少复发状态依据');
+    expect(() => transition(initial, { type: 'REVIEW', fieldId: 'R-03', decision: 'correct', value: '已完成', note: '猜测' })).toThrow('没有训练执行依据');
+    expect(() => transition(initial, { type: 'REVIEW', fieldId: 'R-04', decision: 'correct', value: '无异常', note: '猜测' })).toThrow('缺少评估结论依据');
   });
   it('keeps needs-info and rejected unresolved while reviewed missing can be published', () => {
     const state = ready();
     expect(isReviewed(state.fields[3])).toBe(true);
     expect(getFieldBlockers(state, 'R-04')).toEqual([]);
-    const deferred = transition(state, { type: 'REVIEW', fieldId: 'R-04', decision: 'needs-info', note: '请求补充随访资料。' });
+    const deferred = transition(state, { type: 'REVIEW', fieldId: 'R-04', decision: 'needs-info', note: '请求补充评估资料。' });
     expect(getFieldBlockers(deferred, 'R-04')).toContain('字段仍待补充资料');
     const rejected = transition(state, { type: 'REVIEW', fieldId: 'R-04', decision: 'reject', note: '拒绝无依据候选。' });
     expect(isReviewed(rejected.fields[3])).toBe(false);
   });
-  it('blocks a reviewed field if another critical field for that patient remains open', () => {
+  it('blocks a reviewed field if another critical field for that subject remains open', () => {
     const state = transition(createInitialState('critical'), { type: 'REVIEW', fieldId: 'R-01', decision: 'confirm' });
-    expect(getFieldBlockers(state, 'R-01')).toContain('同一患者的关键问题尚未闭环');
+    expect(getFieldBlockers(state, 'R-01')).toContain('同一对象的关键问题尚未闭环');
     expect(() => transition({ ...state, selectedFieldIds: ['R-01'] }, { type: 'FREEZE' })).toThrow('发布检查');
   });
-  it('keeps privacy and association as distinct blockers', () => {
-    const state = transition(createInitialState('privacy'), { type: 'REVIEW', fieldId: 'R-03', decision: 'correct', value: '计划', note: '未见实施依据。' });
-    expect(getFieldBlockers(state, 'R-03')).toEqual(['患者隐私检查未完成']);
+  it('keeps desensitization and association as distinct blockers', () => {
+    const state = transition(createInitialState('privacy'), { type: 'REVIEW', fieldId: 'R-03', decision: 'correct', value: '计划', note: '未见执行依据。' });
+    expect(getFieldBlockers(state, 'R-03')).toEqual(['对象脱敏检查未完成']);
     state.patients[2].associationPassed = false;
-    expect(getFieldBlockers(state, 'R-06')).toEqual(['患者与事件关联检查未通过']);
+    expect(getFieldBlockers(state, 'R-06')).toEqual(['对象资料关联检查未通过']);
   });
   it('restricts freezing and approval roles and blocks empty selections', () => {
     const state = ready();
@@ -90,15 +90,15 @@ describe('review and publication quality gates', () => {
 describe('frozen versions', () => {
   it('invalidates a pending snapshot when selected fields change but not on unrelated review', () => {
     const frozen = transition(ready(), { type: 'FREEZE' });
-    const unrelated = transition(frozen, { type: 'REVIEW', fieldId: 'R-03', decision: 'correct', value: '计划', note: '本批资料没有实施依据。' });
+    const unrelated = transition(frozen, { type: 'REVIEW', fieldId: 'R-03', decision: 'correct', value: '计划', note: '本批资料没有执行依据。' });
     expect(unrelated.snapshots[0].status).toBe('pending');
-    const modified = transition(unrelated, { type: 'REVIEW', fieldId: 'R-01', decision: 'correct', value: '乙状结肠（原文）', note: '保留原文范围。' });
+    const modified = transition(unrelated, { type: 'REVIEW', fieldId: 'R-01', decision: 'correct', value: '实验室内部采集（原文）', note: '保留原文范围。' });
     expect(modified.snapshots[0].status).toBe('invalidated');
     expect(frozen.snapshots[0].status).toBe('pending');
     expect(transition(frozen, { type: 'SELECT_FIELDS', ids: ['R-06'] }).snapshots[0].status).toBe('invalidated');
     expect(transition(frozen, { type: 'SELECT_FIELDS', ids: [...frozen.selectedFieldIds].reverse() }).snapshots[0].status).toBe('pending');
   });
-  it('invalidates a snapshot when a related patient critical field reopens', () => {
+  it('invalidates a snapshot when a related subject critical field reopens', () => {
     const initial = apply(ready(), { type: 'SELECT_FIELDS', ids: ['R-01'] }, { type: 'FREEZE' });
     const reopened = transition(initial, { type: 'REVIEW', fieldId: 'R-02', decision: 'needs-info', note: '请求重新核对报告。' });
     expect(reopened.snapshots[0].status).toBe('invalidated');
@@ -110,16 +110,16 @@ describe('frozen versions', () => {
     const exported = exportSnapshot(approved, id);
     const changed = apply(approved,
       { type: 'SET_ROLE', role: 'reviewer' },
-      { type: 'REVIEW', fieldId: 'R-01', decision: 'correct', value: '乙状结肠（原文）', note: '补充原文标识。' },
+      { type: 'REVIEW', fieldId: 'R-01', decision: 'correct', value: '实验室内部采集（原文）', note: '补充原文标识。' },
       { type: 'FREEZE' });
     expect(changed.snapshots[0].version).toBe(2);
     expect(changed.snapshots[1]).toEqual(approved.snapshots[0]);
     expect(exportSnapshot(changed, id)).toEqual(exported);
-    expect(changed.snapshots[1].fields[0].value).toBe('乙状结肠');
+    expect(changed.snapshots[1].fields[0].value).toBe('实验室内部采集');
     const logged = transition(changed, { type: 'EXPORT_SNAPSHOT', snapshotId: id });
     expect(logged.audit[0].action).toBe('EXPORT');
     (exported as { fields: { value: string }[] }).fields[0].value = 'external mutation';
-    expect(approved.snapshots[0].fields[0].value).toBe('乙状结肠');
+    expect(approved.snapshots[0].fields[0].value).toBe('实验室内部采集');
   });
 });
 

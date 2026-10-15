@@ -75,10 +75,10 @@ describe('session persistence', () => {
     state = transition(state, { type: 'SET_ROLE', role: 'lead' });
     state = transition(state, { type: 'APPROVE', snapshotId: state.snapshots[0].id });
     state = transition(state, { type: 'SET_ROLE', role: 'reviewer' });
-    state = transition(state, { type: 'REVIEW', fieldId: 'R-06', decision: 'correct', value: '直肠（原文）', note: '补充原文标识。' });
+    state = transition(state, { type: 'REVIEW', fieldId: 'R-06', decision: 'correct', value: '东区站点（原文）', note: '补充原文标识。' });
     expect(saveSession(state)).toBeNull();
-    expect(loadSession('versions').state.snapshots[0].fields[0].value).toBe('直肠');
-    expect(loadSession('versions').state.fields[5].value).toBe('直肠（原文）');
+    expect(loadSession('versions').state.snapshots[0].fields[0].value).toBe('东区站点');
+    expect(loadSession('versions').state.fields[5].value).toBe('东区站点（原文）');
     const broken = structuredClone(state);
     broken.snapshots[0].fieldIds = ['R-01'];
     stored.set(storageKey('versions'), JSON.stringify(broken));

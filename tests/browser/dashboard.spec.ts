@@ -15,7 +15,7 @@ async function navigate(page:Page,label:string){
 }
 async function dashboard(page:Page){
   await navigate(page,'工作概览');
-  await page.getByRole('button',{name:'医疗数据仪表台',exact:true}).click();
+  await page.getByRole('button',{name:'数据仪表台',exact:true}).click();
   await expect(page.getByTestId('research-dashboard')).toBeVisible();
 }
 async function metrics(page:Page|FrameLocator,patients:number,assets:number,fields:number){
@@ -43,7 +43,7 @@ async function screenshot(page:Page,name:string){
   await page.screenshot({path:`output/playwright/${name}.png`,fullPage:true,animations:'disabled'});
 }
 
-test('default medical dashboard filters real seeded records and drills into coverage, dates and field evidence',async({page})=>{
+test('default research dashboard filters real seeded records and drills into coverage, dates and field evidence',async({page})=>{
   const errors=watchErrors(page);await page.goto('/#/overview');
   await expect(page.getByRole('heading',{name:'工作概览',exact:true})).toBeVisible();
   await expect(page.getByTestId('research-dashboard')).toBeVisible();
@@ -73,7 +73,7 @@ test('default medical dashboard filters real seeded records and drills into cove
   expect(errors).toEqual([]);
 });
 
-test('scan import, inventory processing and manual review update dashboard without inventing patients or clinical fields',async({page})=>{
+test('scan import, inventory processing and manual review update dashboard without inventing subjects or fields',async({page})=>{
   test.setTimeout(60000);const errors=watchErrors(page);
   let initial=createInitialState('standalone');initial=transition(initial,{type:'SET_ROLE',role:'manager'});initial=transition(initial,{type:'INTAKE'});
   await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+60000));
@@ -95,7 +95,7 @@ test('scan import, inventory processing and manual review update dashboard witho
   await page.getByLabel('演示角色').selectOption('reviewer');
   const decisionTab=page.getByRole('button',{name:'核验与修订',exact:true});if(await decisionTab.isVisible())await decisionTab.click();
   await page.getByTestId('review-decision').selectOption('correct');await page.getByTestId('review-value').fill('2026-03-05');
-  await page.getByTestId('review-note').fill('已核查合成报告：2026年03月05日为签发日期，03月03日为取材日期。');await page.getByTestId('review-submit').click();
+  await page.getByTestId('review-note').fill('已核查合成报告：2026年03月05日为签发日期，03月03日为采集日期。');await page.getByTestId('review-submit').click();
   await expect(page.getByTestId('review-field-R-02')).toContainText('已修正');
   await dashboard(page);await metrics(page,4,16,6);await page.getByTestId('field-R-02').click();
   const detail=page.getByTestId('dashboard-detail');await expect(detail).toContainText('2026-03-05');await expect(detail).toContainText('2026-03-03');await expect(detail).toContainText('已修正');
@@ -111,12 +111,12 @@ for(const width of [520,1050,1600]){
     expect(await detailAssetIds(page)).toEqual(['F-001','F-002']);await noOverflow(page,width);
     await page.getByLabel('切换深色主题',{exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
     await page.getByTestId('dashboard-patient-filter').selectOption('P-DEMO-003');await metrics(page,1,2,1);
-    await page.getByTestId('coverage-P-DEMO-003-wsi').click();expect(await detailAssetIds(page)).toEqual(['F-010']);
+    await page.getByTestId('coverage-P-DEMO-003-3d').click();expect(await detailAssetIds(page)).toEqual(['F-010']);
     await noOverflow(page,width);await screenshot(page,`dashboard-${width}-dark`);
     await page.getByTestId('dashboard-patient-filter').selectOption('all');await page.getByTestId('coverage-P-DEMO-004-image').click();
     await expect(page.getByTestId('dashboard-detail')).toContainText('该研究对象本批未提供此类资料');await noOverflow(page,width);
     await page.getByRole('button',{name:'处理与运行',exact:true}).click();await expect(page.getByTestId('inventory-total')).toHaveText('12');
-    await page.getByRole('button',{name:'医疗数据仪表台',exact:true}).click();await expect(page.getByTestId('research-dashboard')).toBeVisible();
+    await page.getByRole('button',{name:'数据仪表台',exact:true}).click();await expect(page.getByTestId('research-dashboard')).toBeVisible();
     await metrics(page,4,12,6);expect(errors).toEqual([]);
   });
 }
