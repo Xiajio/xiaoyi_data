@@ -65,6 +65,7 @@ class Dataset(Timestamped, Base):
     card_text: Mapped[str] = mapped_column(Text, default="")
     fingerprint: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    source_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -109,3 +110,94 @@ class Run(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     retry_of: Mapped[int | None] = mapped_column(Integer, default=None)
+
+
+class Enrichment(Timestamped, Base):
+    """自动整理结果，一律候选状态（status ∈ candidate/confirmed/rejected/superseded）。
+
+    kind ∈ schema/quality/embedding；producer 记录产出版本（如 enrich/0.1、嵌入模型名）。
+    自动产出必须挂证据（evidence_ids），嵌入例外：其证据是被嵌入的卡片证据本身。
+    """
+
+    __tablename__ = "enrichment"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("dataset.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    producer: Mapped[str] = mapped_column(String(128), default="")
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    confidence: Mapped[str] = mapped_column(String(16), default="")
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="candidate", index=True)
+
+
+class Idea(Base):
+    """来自文献挖掘智能体（小亿灵析）的思路卡，按 external_id 幂等导入。"""
+
+    __tablename__ = "idea"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    statement: Mapped[str] = mapped_column(Text, default="")
+    requirements: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Pairing(Timestamped, Base):
+    """思路 × 数据集版本提案。智能体只能创建 pending；确认/驳回由人工完成。"""
+
+    __tablename__ = "pairing"
+    __table_args__ = (UniqueConstraint("idea_id", "dataset_version_id", name="uq_pairing_idea_version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    idea_id: Mapped[int] = mapped_column(ForeignKey("idea.id"), index=True)
+    dataset_version_id: Mapped[int] = mapped_column(ForeignKey("dataset_version.id"), index=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    proposed_by: Mapped[str] = mapped_column(String(32), default="agent")
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+
+
+class Snapshot(Timestamped, Base):
+    """思路 × 数据集组合的冻结版本；同一思路同时最多一个 pending。"""
+
+    __tablename__ = "snapshot"
+    __table_args__ = (UniqueConstraint("idea_id", "version", name="uq_snapshot_idea_version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    idea_id: Mapped[int] = mapped_column(ForeignKey("idea.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    pairing_ids: Mapped[list] = mapped_column(JSON, default=list)
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
+class Review(Base):
+    """人工核验留痕：target_kind ∈ enrichment/pairing，decision ∈ confirmed/rejected。"""
+
+    __tablename__ = "review"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    target_kind: Mapped[str] = mapped_column(String(16), index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    decision: Mapped[str] = mapped_column(String(16))
+    note: Mapped[str] = mapped_column(Text, default="")
+    role: Mapped[str] = mapped_column(String(32), default="reviewer")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Audit(Base):
+    """服务侧操作审计（内部测试为本地记录，不具备不可篡改能力）。"""
+
+    __tablename__ = "audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor: Mapped[str] = mapped_column(String(64), default="api")
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

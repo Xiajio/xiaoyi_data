@@ -88,6 +88,7 @@ def _upsert_dataset(session, source: Source, raw: RawDataset, fp: str) -> tuple[
         downloads=raw.downloads,
         likes=raw.likes,
         card_text=raw.card_text,
+        source_modified_at=raw.ref.last_modified,
         last_seen_at=utcnow(),
     )
     same_key = session.scalar(select(Dataset).where(Dataset.source_id == source.id, Dataset.source_key == raw.ref.source_key))

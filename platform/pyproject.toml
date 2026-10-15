@@ -10,10 +10,16 @@ requires-python = ">=3.12"
 dependencies = [
   "sqlalchemy>=2.0",
   "huggingface_hub>=0.26",
+  "pyyaml>=6.0",
+  "numpy>=1.26",
+  "mcp>=1.0,<2",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27"]
+embed = ["sentence-transformers>=3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

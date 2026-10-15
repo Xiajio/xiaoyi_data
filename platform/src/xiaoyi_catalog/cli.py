@@ -18,6 +18,10 @@ from .adapters.base import CollectScope
 from .adapters.huggingface import DEFAULT_ENDPOINT, HuggingFaceAdapter
 from .collect import collect
 from .db import create_engine_for, init_db, session_scope
+from .embeddings import HashEmbedder, SentenceTransformerEmbedder, embed_all
+from .enrich import enrich_all
+from .pairing import (PairingError, approve_snapshot, export_snapshot, freeze_snapshot,
+                      propose_pairing, review_pairing, snapshot_status)
 from .search import SearchFilter, catalog_stats, search_datasets
 
 DEFAULT_DB = "./data/catalog.db"
@@ -111,6 +115,99 @@ def asdict_safe(scope: CollectScope) -> dict:
             "languages": list(scope.languages), "author": scope.author, "limit": scope.limit}
 
 
+def _split_ids(text: str) -> list[int]:
+    return [int(item) for item in text.split(",") if item.strip()]
+
+
+def _guarded(args: argparse.Namespace, action) -> int:
+    engine = create_engine_for(_resolve_db(args))
+    init_db(engine)
+    try:
+        with session_scope(engine) as session:
+            result = action(session)
+    except PairingError as exc:
+        print(f"操作未完成：{exc}", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    if getattr(args, "json", False):
+        _print_json(result)
+    elif result is not None:
+        print(result)
+    return 0
+
+
+def cmd_enrich(args: argparse.Namespace) -> int:
+    engine = create_engine_for(_resolve_db(args))
+    init_db(engine)
+    try:
+        stats = enrich_all(engine, only_missing=args.missing_only)
+    finally:
+        engine.dispose()
+    print(f"整理完成：处理 {stats['processed']}，跳过 {stats['skipped']}")
+    return 0
+
+
+def cmd_embed(args: argparse.Namespace) -> int:
+    engine = create_engine_for(_resolve_db(args))
+    init_db(engine)
+    embedder = HashEmbedder() if args.hash else SentenceTransformerEmbedder(args.model)
+    try:
+        stats = embed_all(engine, embedder)
+    finally:
+        engine.dispose()
+    print(f"嵌入完成：生成 {stats['embedded']}，跳过未变化 {stats['skipped']} · 模型 {embedder.model_name}")
+    return 0
+
+
+def cmd_propose(args: argparse.Namespace) -> int:
+    try:
+        idea = json.loads(args.idea)
+    except json.JSONDecodeError:
+        print("--idea 需要思路卡 JSON（含 external_id/title/requirements）", file=sys.stderr)
+        return 1
+    return _guarded(args, lambda session: propose_pairing(session, idea, _split_ids(args.versions), args.rationale))
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    return _guarded(args, lambda session: {"id": review_pairing(session, args.pairing, args.decision, args.note).id, "status": args.decision})
+
+
+def cmd_freeze(args: argparse.Namespace) -> int:
+    pairing_ids = _split_ids(args.pairings) if args.pairings else None
+    return _guarded(args, lambda session: {"snapshot_id": freeze_snapshot(session, args.idea, pairing_ids, note=args.note).id})
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    return _guarded(args, lambda session: {"snapshot_id": approve_snapshot(session, args.snapshot).id, "status": "approved"})
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    return _guarded(args, lambda session: snapshot_status(session, args.idea))
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    def _export(session):
+        return export_snapshot(session, args.snapshot)
+    engine = create_engine_for(_resolve_db(args))
+    init_db(engine)
+    try:
+        with session_scope(engine) as session:
+            result = _export(session)
+    except PairingError as exc:
+        print(f"操作未完成：{exc}", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, ensure_ascii=False, indent=2)
+        print(f"已写入 {args.out}")
+    else:
+        _print_json(result)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="xiaoyi-catalog", description="小亿数据集目录：采集与检索（M1）")
     parser.add_argument("--db", default="", help=f"SQLite 路径（默认 {DEFAULT_DB} 或 XIAOYI_CATALOG_DB）")
@@ -143,6 +240,51 @@ def build_parser() -> argparse.ArgumentParser:
     stats_parser = sub.add_parser("stats", help="目录概览")
     stats_parser.add_argument("--json", action="store_true", help="以 JSON 输出")
     stats_parser.set_defaults(func=cmd_stats)
+
+    enrich_parser = sub.add_parser("enrich", help="离线整理：schema 摘要 + 质量信号（候选）")
+    enrich_parser.add_argument("--missing-only", action="store_true", help="只处理尚无 schema 候选的记录")
+    enrich_parser.set_defaults(func=cmd_enrich)
+
+    embed_parser = sub.add_parser("embed", help="生成嵌入索引")
+    embed_parser.add_argument("--model", default="BAAI/bge-small-zh-v1.5", help="嵌入模型（默认 bge-small-zh-v1.5）")
+    embed_parser.add_argument("--hash", action="store_true", help="使用无依赖的哈希嵌入器（离线冒烟）")
+    embed_parser.set_defaults(func=cmd_embed)
+
+    propose_parser = sub.add_parser("propose", help="提交思路 × 数据集配对提案（落 pending）")
+    propose_parser.add_argument("--idea", required=True, help="思路卡 JSON：external_id/title/requirements")
+    propose_parser.add_argument("--versions", required=True, help="逗号分隔的 dataset_version id")
+    propose_parser.add_argument("--rationale", required=True, help="配对理由")
+    propose_parser.add_argument("--json", action="store_true")
+    propose_parser.set_defaults(func=cmd_propose)
+
+    review_parser = sub.add_parser("review", help="人工核验配对（confirmed/rejected）")
+    review_parser.add_argument("--pairing", type=int, required=True)
+    review_parser.add_argument("--decision", required=True, choices=["confirmed", "rejected"])
+    review_parser.add_argument("--note", default="")
+    review_parser.add_argument("--json", action="store_true")
+    review_parser.set_defaults(func=cmd_review)
+
+    freeze_parser = sub.add_parser("freeze", help="冻结思路下已确认配对为快照")
+    freeze_parser.add_argument("--idea", required=True, help="思路卡 external_id")
+    freeze_parser.add_argument("--pairings", default="", help="逗号分隔配对 id；缺省纳入全部已确认")
+    freeze_parser.add_argument("--note", default="")
+    freeze_parser.add_argument("--json", action="store_true")
+    freeze_parser.set_defaults(func=cmd_freeze)
+
+    approve_parser = sub.add_parser("approve", help="批准待审批快照")
+    approve_parser.add_argument("--snapshot", type=int, required=True)
+    approve_parser.add_argument("--json", action="store_true")
+    approve_parser.set_defaults(func=cmd_approve)
+
+    status_parser = sub.add_parser("status", help="查询思路的配对与快照状态")
+    status_parser.add_argument("--idea", required=True, help="思路卡 external_id")
+    status_parser.add_argument("--json", action="store_true")
+    status_parser.set_defaults(func=cmd_status)
+
+    export_parser = sub.add_parser("export", help="导出已批准快照的冻结内容")
+    export_parser.add_argument("--snapshot", type=int, required=True)
+    export_parser.add_argument("--out", default="", help="写入文件；缺省打印 JSON")
+    export_parser.set_defaults(func=cmd_export)
     return parser
 
 

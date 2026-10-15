@@ -29,6 +29,18 @@ def create_engine_for(db_path: str | Path) -> Engine:
 
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    migrate(engine)
+
+
+def migrate(engine: Engine) -> None:
+    """增量列迁移：create_all 不会改已存在的表，这里补 M2 新增的可空列。"""
+    additive = {"dataset": {"source_modified_at": "DATETIME"}}
+    with engine.begin() as conn:
+        for table, columns in additive.items():
+            existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            for column, ddl in columns.items():
+                if column not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 @contextmanager
