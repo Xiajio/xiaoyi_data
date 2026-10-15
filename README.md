@@ -23,6 +23,19 @@ npm run test:e2e
 
 `npm run check` 按顺序执行类型检查、规则测试、构建与浏览器验收。
 
+## 策展模式（M3，对接目录服务）
+
+页面在 `?mode=catalog`（或构建期 `VITE_CATALOG_API`）下切换为策展工作台，数据来自 `platform/` 的目录服务而非本地演示状态：
+
+```sh
+# 终端 1：目录服务（默认读 ./data/catalog.db）
+cd platform && .venv/Scripts/python -m uvicorn xiaoyi_catalog.service:create_app --factory --port 5280
+# 终端 2：前端
+npm run dev    # 打开 http://127.0.0.1:5173/?mode=catalog
+```
+
+策展模式含工作概览、数据目录（筛选/证据/整理候选）、整理核验（候选确认/驳回）、配对与发布（提案核验、冻结、审批、导出）、运行与审计五个页面。角色选择器仅决定可操作范围；核验与审批在服务端的 `review`/`audit` 表留痕。演示模式不受影响，两者共用同一构建。
+
 ## 部署
 
 `npm run build` 生成 `dist/`，整体部署到静态 HTTP(S) 服务。资源使用相对路径，可挂载到域名根目录或子目录。主工具入口为 `index.html`，示例宿主为 `host.html`。不要通过 `file://` 双击生产包；使用 `npm run preview` 或任意静态服务器。
