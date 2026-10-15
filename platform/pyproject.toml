@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiaoyi-catalog"
+version = "0.1.0"
+description = "小亿数据集目录平台：多来源数据集采集、整理与目录检索（M1：HuggingFace 采集 + 结构化检索）"
+requires-python = ">=3.12"
+dependencies = [
+  "sqlalchemy>=2.0",
+  "huggingface_hub>=0.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
