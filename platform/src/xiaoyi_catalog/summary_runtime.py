@@ -192,6 +192,24 @@ def execute_summary(engine, enrichment_id: int, *, llm=None, guard=lambda: None)
                           detail=f"整理候选 #{row.id} 智能体总结已生成，待人工核验（引用证据 {len(cited)} 条{demoted_note}）"))
 
 
+def backfill_summaries(engine, *, limit: int = 200) -> dict:
+    """存量回填：为尚无生效智能体总结的 verified 版本排队生成（幂等）。"""
+    LLMClient.from_env()
+    submitted = 0
+    with session_scope(engine) as session:
+        rows = session.execute(select(DatasetVersion.id, DatasetVersion.dataset_id)
+            .join(Dataset, Dataset.id == DatasetVersion.dataset_id)
+            .where(Dataset.status == "active", DatasetVersion.provenance_status == "verified")
+            .order_by(DatasetVersion.id.desc()).limit(limit)).all()
+        for version_id, dataset_id in rows:
+            before = _latest_agent_summary(session, version_id)
+            if before is not None and before.status in {"generating", "candidate", "confirmed", "corrected"}:
+                continue
+            submit_summary(session, dataset_id, version_id, "agent")
+            submitted += 1
+    return {"submitted": submitted, "scanned": len(rows)}
+
+
 def process_next_summary(engine, *, llm=None, guard=lambda: None) -> bool:
     guard()
     with session_scope(engine) as session:

@@ -20,6 +20,7 @@ from .collect import collect
 from .db import create_engine_for, init_db, session_scope
 from .embeddings import HashEmbedder, SentenceTransformerEmbedder, embed_all
 from .enrich import enrich_all
+from .summary_runtime import backfill_summaries
 from .pairing import (PairingError, approve_snapshot, export_snapshot, freeze_snapshot,
                       propose_pairing, review_pairing, snapshot_status)
 from .search import SearchFilter, catalog_stats, search_datasets
@@ -173,6 +174,17 @@ def cmd_enrich(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_summary_backfill(args: argparse.Namespace) -> int:
+    engine = create_engine_for(_resolve_db(args))
+    init_db(engine)
+    try:
+        stats = backfill_summaries(engine, limit=args.limit)
+    finally:
+        engine.dispose()
+    print(f"智能体总结回填：新排队 {stats['submitted']}，扫描版本 {stats['scanned']}（由后台 worker 逐条生成）")
+    return 0
+
+
 def cmd_embed(args: argparse.Namespace) -> int:
     engine = create_engine_for(_resolve_db(args))
     init_db(engine)
@@ -271,6 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     enrich_parser = sub.add_parser("enrich", help="离线整理：schema 摘要 + 质量信号（候选）")
     enrich_parser.add_argument("--missing-only", action="store_true", help="只处理尚无 schema 候选的记录")
     enrich_parser.set_defaults(func=cmd_enrich)
+    summary_parser = sub.add_parser("summary-backfill", help="存量回填：为尚无智能体总结的版本排队生成")
+    summary_parser.add_argument("--limit", type=int, default=200, help="最多扫描的版本数")
+    summary_parser.set_defaults(func=cmd_summary_backfill)
 
     embed_parser = sub.add_parser("embed", help="生成嵌入索引")
     embed_parser.add_argument("--model", default="BAAI/bge-small-zh-v1.5", help="嵌入模型（默认 bge-small-zh-v1.5）")

@@ -155,3 +155,45 @@ def test_dataset_summary_contract_bounds():
     summary = DatasetSummary.model_validate({"rationale": "总结", "claims": [],
                                              "uncertainty": ["证据不足"]})
     assert summary.uncertainty == ["证据不足"]
+
+
+def _collect_one(engine, monkeypatch, *, auto="1"):
+    from conftest import FakeAdapter, make_raw
+    from xiaoyi_catalog.auth import Principal
+    from xiaoyi_catalog.collection_runtime import create_collection_job, process_next_collection
+    monkeypatch.setenv("XIAOYI_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("XIAOYI_LLM_MODEL", "fake")
+    monkeypatch.setenv("XIAOYI_LLM_API_KEY", "fake")
+    monkeypatch.setenv("XIAOYI_CATALOG_AUTO_SUMMARY", auto)
+    adapter = FakeAdapter([make_raw("a/one", license="mit", card="中文新闻分类语料，包含训练与测试切分。")])
+    with session_scope(engine) as session:
+        create_collection_job(session, {}, Principal(1, "alice", "researcher"))
+    process_next_collection(engine, adapter_factory=lambda: adapter)
+
+
+def test_collection_queues_summary_when_llm_configured(engine, monkeypatch):
+    _collect_one(engine, monkeypatch)
+    with session_scope(engine) as session:
+        row = session.scalar(select(Enrichment).where(Enrichment.kind == "llm_summary",
+                                                      Enrichment.producer.like("agent-summary/%")))
+        assert row is not None and row.status == "generating"
+        ident = row.id
+    assert process_next_summary(engine, llm=FakeModel())
+    assert read(engine, ident).status == "candidate"
+
+
+def test_collection_skips_summary_when_disabled(engine, monkeypatch):
+    _collect_one(engine, monkeypatch, auto="0")
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count(Enrichment.id)).where(
+            Enrichment.kind == "llm_summary")) == 0
+
+
+def test_backfill_submits_only_versions_without_summary(engine, monkeypatch):
+    monkeypatch.setenv("XIAOYI_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("XIAOYI_LLM_MODEL", "fake")
+    monkeypatch.setenv("XIAOYI_LLM_API_KEY", "fake")
+    seed(engine)
+    from xiaoyi_catalog.summary_runtime import backfill_summaries
+    assert backfill_summaries(engine) == {"submitted": 1, "scanned": 1}
+    assert backfill_summaries(engine)["submitted"] == 0
