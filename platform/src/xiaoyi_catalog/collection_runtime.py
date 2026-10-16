@@ -15,7 +15,6 @@ from .adapters.base import CollectScope
 from .collect import CollectionCancelled, classify_error, collect, safe_collection_error, safe_error_fields
 from .db import session_scope
 from .enrich import PRODUCER, enrich_version
-from .summary_runtime import submit_summary
 from .models import Audit, DatasetVersion, Enrichment, Run, utcnow
 from .models_collection import CollectionEvent, CollectionJob, CollectionSchedule
 
@@ -407,6 +406,8 @@ def process_next_collection(engine, *, adapter_factory=None, guard=None):
                     _event(session, state, "enriched", "规则整理候选已保存，待人工核验", {"dataset_version_id": version_id})
                     if auto_summary:
                         try:
+                            # 延迟导入：summary_runtime → qa_tools → dashboard → collection_runtime 成环
+                            from .summary_runtime import submit_summary
                             if submit_summary(session, version.dataset_id, version_id, "agent")["status"] == "generating":
                                 _event(session, state, "agent_summary_queued", "智能体总结已排队，后台生成后进入核验队列", {"dataset_version_id": version_id})
                         except Exception:
