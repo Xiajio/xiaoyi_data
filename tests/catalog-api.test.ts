@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, CatalogApi, resolveCatalogBase } from '../src/catalog/api';
+import { ApiError, CatalogApi, requestKey, resolveCatalogBase } from '../src/catalog/api';
 
 describe('resolveCatalogBase', () => {
   it('defaults to catalog mode and keeps explicit demos and embeds separate', () => {
@@ -122,5 +122,28 @@ describe('CatalogApi', () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(0);
     expect((error as ApiError).message).toContain('无法连接目录服务');
+  });
+});
+
+describe('requestKey', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses crypto.randomUUID when available', () => {
+    vi.stubGlobal('crypto', { randomUUID: () => 'fixed-uuid' });
+    expect(requestKey()).toBe('fixed-uuid');
+  });
+
+  it('falls back to a server-valid UUID shape without randomUUID (insecure LAN context)', () => {
+    vi.stubGlobal('crypto', { getRandomValues: (bytes: Uint8Array) => { bytes.fill(7); return bytes; } });
+    const key = requestKey();
+    expect(key).toMatch(/^[A-Za-z0-9_-]{36}$/);
+    expect(key[14]).toBe('4');
+  });
+
+  it('still produces unique keys when crypto is absent entirely', () => {
+    vi.stubGlobal('crypto', undefined);
+    const key = requestKey();
+    expect(key).toMatch(/^[A-Za-z0-9_-]{36}$/);
+    expect(requestKey()).not.toBe(key);
   });
 });

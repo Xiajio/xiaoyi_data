@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowUp, Database, MessageSquare, Plus, RotateCcw, Square, X } from 'lucide-react';
-import { ApiError, CatalogApi, type Id, type QaCitation, type QaConversationDetail, type QaSource, type QaTurn } from './api';
+import { ApiError, CatalogApi, requestKey, type Id, type QaCitation, type QaConversationDetail, type QaSource, type QaTurn } from './api';
 import { dateTime, errorText, LoadState, StatusBadge, useApiData } from './ui';
 import './qa.css';
 
@@ -72,7 +72,7 @@ export function QaPanel({ api, open, onClose }: { api: CatalogApi; open: boolean
     let id = selected;
     try {
       if (id == null) { const conversation = await api.createQaConversation(question.slice(0, 70)); id = conversation.id; setDrafts(previous => ({ ...previous, [String(id)]: draft, new: '' })); setSelected(id); conversations.reload(); }
-      if (!pending.current || pending.current.conversationId !== id || pending.current.question !== question) pending.current = { conversationId: id, question, requestKey: crypto.randomUUID() };
+      if (!pending.current || pending.current.conversationId !== id || pending.current.question !== question) pending.current = { conversationId: id, question, requestKey: requestKey() };
       await api.askQa(id, question, pending.current.requestKey);
       pending.current = null; setDrafts(previous => ({ ...previous, [String(id)]: '' })); setEpoch(value => value + 1); conversations.reload();
     } catch (reason) { setError(errorText(reason)); if (reason instanceof ApiError && reason.status === 503) capabilities.reload(); }
