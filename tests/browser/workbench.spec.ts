@@ -32,6 +32,15 @@ async function mockWorkbench(page: Page, { login = false, role = 'admin', withAs
     if (path === '/api/review/enrichments') { const params = new URL(request.url()).searchParams; const wantStatus = params.get('status'); const wantKind = params.get('kind') || ''; const items = ([enrichment, ...(summary ? [summaryCandidate()] : [])] as Record<string, unknown>[]).filter(item => item.status === wantStatus && (!wantKind || item.kind === wantKind)); return json({ items }); }
     if (path === '/api/qa-capabilities') return json({ configured: true, model: 'fake-llm', reason: '', limits: { max_model_calls: 3, max_tool_calls: 6 }, tools: [] });
     if (path === '/api/dataset-versions/11/agent-summary' && method === 'POST') { if (!summary) { summary = { id: 20, dataset_id: 1, dataset_version_id: 11, kind: 'llm_summary', producer: 'agent-summary/1' }; summaryPolls = 0; } return json(summaryCandidate(), 202); }
+    if (path === '/api/dataset-versions/31/agent-summary' && method === 'POST') return json({ id: 23, dataset_id: 3, dataset_version_id: 31, kind: 'llm_summary', producer: 'agent-summary/1', status: 'generating', value: { attempts: 0 }, evidence_ids: [] }, 202);
+    if (path === '/api/agent-summaries') return json({
+      counts: { generating: 2, candidate: 1, confirmed: 0, corrected: 0, failed: 1 },
+      queue: [
+        { id: 21, dataset: 'lab/news', dataset_id: 1, dataset_version_id: 11, position: 1, attempts: 1, created_at: '2026-10-16T08:00:00+00:00', updated_at: null },
+        { id: 22, dataset: 'lab/images', dataset_id: 2, dataset_version_id: 21, position: 2, attempts: 0, created_at: '2026-10-16T08:05:00+00:00', updated_at: null }],
+      recent: [{ id: 20, dataset: 'lab/news', dataset_version_id: 11, status: 'candidate', claims: 3, demoted: 1, model: 'fake-summary', tokens: 1700, updated_at: '2026-10-16T07:50:00+00:00' }],
+      failed: [{ id: 19, dataset: 'lab/broken', dataset_version_id: 31, attempts: 3, error: '模型输出未通过核验：模型引用未通过原文核验；未发布该总结', updated_at: '2026-10-16T07:40:00+00:00' }],
+    });
     if (path === '/api/review/enrichments/3') { enrichment = { ...enrichment, status: body.decision === 'corrected' ? 'confirmed' : String(body.decision) }; return json(enrichment); }
     if (path === '/api/agent-runs' && method === 'POST') { const run = { id: 'run-1', goal: body.goal, payload: body, status: 'queued', stage: 'queued', tool_calls: 0, created_at: '2026-10-15T10:00:00Z', result: {} }; runs.push(run); return json(run, 201); }
     if (path === '/api/agent-runs') return json({ items: runs });
@@ -101,6 +110,21 @@ test('agent review summary is generated asynchronously and joins the queue for h
   await expect(card).toContainText('元数据不代表已下载完整数据文件');
   await card.getByRole('button', { name: '证据 101', exact: true }).click();
   await expect(card.locator('#evidence-101')).toHaveClass(/rv-flash/);
+});
+
+test('summary board shows the running queue, recent completions and failed retries', async ({ page }) => {
+  const calls = await mockWorkbench(page); await page.goto('/'); await nav(page, '运行与审计');
+  const board = page.getByTestId('summary-board');
+  await expect(board).toBeVisible();
+  await expect(page.getByTestId('summary-generating')).toHaveText('2');
+  await expect(page.getByTestId('summary-running')).toContainText('lab/news');
+  await expect(page.getByTestId('summary-running')).toContainText('队列第 1 位');
+  await expect(board).toContainText('lab/images');
+  await expect(page.getByTestId('summary-recent-20')).toContainText('3 条引用');
+  await expect(page.getByTestId('summary-recent-20')).toContainText('1 条降级');
+  await page.getByTestId('summary-failed-19').getByRole('button', { name: '重试' }).click();
+  await expect(page.getByRole('status')).toContainText('已重新排队');
+  expect(calls.find(call => call.path === '/api/dataset-versions/31/agent-summary')).toBeTruthy();
 });
 
 test('approved snapshots offer a research bundle and readers cannot approve downloads', async ({ page }) => {

@@ -115,14 +115,67 @@ function PublishPage({ api, role, onToast }: { api: CatalogApi; role: Role; onTo
   </>;
 }
 
-function OpsPage({ api }: { api: CatalogApi }) {
-  const [tab, setTab] = useState<'runs' | 'audit'>('runs');
+function SummaryBoard({ api, role, go, onToast }: { api: CatalogApi; role: Role; go: (page: PageId) => void; onToast: (text: string) => void }) {
+  const board = useApiData(client => client.agentSummaries(), api, [], 5000);
+  const [retrying, setRetrying] = useState(false);
+  const data = board.data;
+  const retry = async (versionId: Id) => {
+    setRetrying(true);
+    try { await api.agentSummary(versionId); onToast('已重新排队，后台将重试生成'); board.reload(); }
+    catch (reason) { onToast(errorText(reason)); }
+    finally { setRetrying(false); }
+  };
+  const waited = (value: string | null) => {
+    if (!value) return '时长未知';
+    const minutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60000));
+    return minutes < 1 ? '不到 1 分钟' : minutes < 60 ? `${minutes} 分钟` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`;
+  };
+  if (!data) return <LoadState loading={board.loading} error={board.error} onRetry={board.reload} />;
+  const done = data.counts.candidate + data.counts.confirmed + data.counts.corrected;
+  const total = done + data.counts.generating + data.counts.failed;
+  const running = data.queue[0] ?? null;
+  const pct = total > 0 ? Math.round(done / total * 100) : 100;
+  return <div className="pp-body" data-testid="summary-board">
+    {board.error ? <div className="pp-note pp-note-warning" role="alert"><span>刷新失败：{board.error}。下方保留上次成功读取的数据。</span><button className="btn" onClick={board.reload}>重试</button></div> : null}
+    <div className="pp-stats ov-stats ops-board-stats">
+      <div className="pp-stat"><span className="muted">排队与处理中</span><div className={data.counts.generating > 0 ? 'pp-stat-alert' : ''}><strong data-testid="summary-generating">{data.counts.generating}</strong><span>条</span></div><small>每 5 秒自动刷新</small></div>
+      <div className="pp-stat"><span className="muted">已完成待核验</span><div><strong>{done}</strong><span>条</span></div><small>在「整理核验 · 模型摘要」中处理</small></div>
+      <div className="pp-stat"><span className="muted">失败</span><div><strong>{data.counts.failed}</strong><span>条</span></div><small>可在下方重试</small></div>
+      <div className="pp-stat"><span className="muted">完成率</span><div><strong>{pct}<span>%</span></strong></div><small>共 {total} 条总结任务</small></div>
+    </div>
+    <div className="ops-progress" aria-label={`完成率 ${pct}%`}><span style={{ width: `${pct}%` }} /></div>
+    {running ? <section className="panel ops-running" data-testid="summary-running">
+      <div className="ops-running-head"><span className="ops-pulse" aria-hidden="true" /><div><h3>正在处理：{running.dataset}</h3><p className="muted">版本 #{running.dataset_version_id} · 队列第 1 位{running.attempts > 0 ? ` · 第 ${running.attempts} 次尝试` : ''} · 已等待 {waited(running.created_at)}</p></div></div>
+    </section> : <div className="empty"><ShieldCheck size={24} /><strong>没有正在处理或排队的总结</strong><p>新采集的版本整理完成后会自动排队；也可在核验卡上手动发起。</p></div>}
+    {data.queue.length > 1 ? <section className="ops-queue"><h3>排队中 <span className="badge">{data.queue.length - 1}</span></h3><ol className="ops-queue-list">
+      {data.queue.slice(1).map(item => <li key={item.id}><span className="ops-pos">#{item.position}</span><strong>{item.dataset}</strong><span className="muted">版本 #{item.dataset_version_id}{item.attempts > 0 ? ` · 重试 ${item.attempts}` : ''} · 已等待 {waited(item.created_at)}</span></li>)}
+    </ol></section> : null}
+    <section className="ops-recent"><h3>最近完成 <span className="badge">{data.recent.length}</span></h3>
+      {data.recent.length ? <div className="table-wrap"><table><thead><tr><th>数据集</th><th>状态</th><th>依据</th><th>模型</th><th>完成时间</th><th></th></tr></thead><tbody>
+        {data.recent.map(item => <tr key={item.id} data-testid={`summary-recent-${item.id}`}><td><strong>{item.dataset}</strong><small>版本 #{item.dataset_version_id}</small></td>
+          <td><StatusBadge status={item.status} /></td>
+          <td><span className="badge good">{item.claims} 条引用</span>{item.demoted > 0 ? <span className="badge warn">{item.demoted} 条降级</span> : null}</td>
+          <td><small>{item.model}{item.tokens ? ` · ${item.tokens} tok` : ''}</small></td>
+          <td className="pp-nowrap">{dateTime(item.updated_at)}</td>
+          <td><button className="btn quiet" onClick={() => go('review')}>去核验</button></td></tr>)}
+      </tbody></table></div> : <p className="muted">还没有完成的总结。</p>}
+    </section>
+    {data.failed.length ? <section className="ops-failed"><h3>失败 <span className="badge bad">{data.failed.length}</span></h3><ol className="ops-queue-list">
+      {data.failed.map(item => <li key={item.id} data-testid={`summary-failed-${item.id}`}><span className="ops-pos">✕</span><strong>{item.dataset}</strong><span className="muted">版本 #{item.dataset_version_id} · {item.attempts} 次尝试 · {item.error}</span><button className="btn" disabled={!canResearch(role) || retrying} title={!canResearch(role) ? '需要研究员及以上角色' : '重新排队生成'} onClick={() => void retry(item.dataset_version_id)}><RotateCcw size={13} />重试</button></li>)}
+    </ol></section> : null}
+    <p className="pp-footnote">总结由后台 worker 逐条生成（每条一次模型调用，通常几秒到几十秒）；完成后进入「模型摘要」核验队列，人工确认后才生效。</p>
+  </div>;
+}
+
+function OpsPage({ api, role, go, onToast }: { api: CatalogApi; role: Role; go: (page: PageId) => void; onToast: (text: string) => void }) {
+  const [tab, setTab] = useState<'summaries' | 'runs' | 'audit'>('summaries');
   const runs = useApiData(client => client.runs(), api, []);
   const audit = useApiData(client => client.audit(), api, []);
   const active = tab === 'runs' ? runs : audit;
   return <>
-    <header className="pp-heading"><div><h1>运行与审计</h1><p className="muted pp-subtitle">采集任务与操作留痕；本地记录，不具备不可篡改能力。</p></div></header>
-    <div className="pp-tabs cat-tabs">{[['runs', '采集任务'], ['audit', '操作审计']].map(([id, label]) => <button key={id} className={tab === id ? 'is-active' : ''} onClick={() => setTab(id as 'runs' | 'audit')}>{label}</button>)}</div>
+    <header className="pp-heading"><div><h1>运行与审计</h1><p className="muted pp-subtitle">智能体总结进度、采集任务与操作留痕；本地记录，不具备不可篡改能力。</p></div></header>
+    <div className="pp-tabs cat-tabs">{[['summaries', '智能体总结'], ['runs', '采集任务'], ['audit', '操作审计']].map(([id, label]) => <button key={id} className={tab === id ? 'is-active' : ''} onClick={() => setTab(id as 'summaries' | 'runs' | 'audit')}>{label}</button>)}</div>
+    {tab === 'summaries' ? <SummaryBoard api={api} role={role} go={go} onToast={onToast} /> : <>
     <LoadState loading={active.loading} error={active.error} onRetry={active.reload} />
     {tab === 'runs' && runs.data ? <div className="table-wrap"><table><thead><tr><th>任务</th><th>来源</th><th>状态</th><th>统计</th><th>开始</th><th>结束</th></tr></thead><tbody>
       {runs.data.items.map((run: RunItem) => <tr key={run.id}><td className="pp-mono">#{run.id}</td><td>{run.adapter}</td><td><StatusBadge status={run.status} /></td>
@@ -132,6 +185,7 @@ function OpsPage({ api }: { api: CatalogApi }) {
     {tab === 'audit' && audit.data ? <div className="table-wrap"><table><thead><tr><th>时间</th><th>角色</th><th>操作</th><th>详情</th></tr></thead><tbody>
       {audit.data.items.map((item: AuditItem) => <tr key={item.id}><td className="pp-nowrap">{dateTime(item.created_at)}</td><td>{item.actor}</td><td>{item.action}</td><td>{item.detail}</td></tr>)}
     </tbody></table></div> : null}
+    </>}
   </>;
 }
 
@@ -164,7 +218,7 @@ export function CatalogApp({ api }: { api: CatalogApi }) {
       <div className="sidebar-bottom"><div className="local-indicator"><i />团队目录服务</div><p>候选有证据<br />数据有版本</p><a href="?mode=demo">打开合成演示 <ArrowRight size={13} /></a></div></aside>
     <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="btn icon nav-toggle" aria-label="切换导航" aria-expanded={navOpen} aria-controls="catalog-navigation" onClick={() => setNavOpen(!navOpen)}><Menu size={18} /></button><span>科研数据</span><span className="crumb-slash">/</span><strong>{pages.find(item => item.id === page)?.label}</strong></div><div className="top-actions"><button className="btn quiet cat-qa-toggle" aria-label="数据问答" aria-expanded={qaOpen} aria-controls="catalog-qa-panel" onClick={() => { setQaMounted(true); setQaOpen(value => !value); }}><MessageSquare size={15} /><span>数据问答</span></button><span className="cat-identity">{user.username}<span className="badge">{ROLE_LABELS[user.role]}</span></span><button className="btn quiet" onClick={async () => { try { await api.logout(); setUser(null); setPage('overview'); } catch (reason) { setToast(errorText(reason)); } }}>退出登录</button><button className="btn icon" aria-label={theme === 'light' ? '切换深色主题' : '切换浅色主题'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button></div></header>
       <div className="demo-strip"><span className="demo-tag">团队目录</span><span>智能整理 · 人工核验 · 版本留存</span><span className="demo-strip-detail">当前权限由团队账号确定</span></div>
-      <main className="workspace-content" id="catalog-content" tabIndex={-1}>{page === 'overview' && <OverviewPage api={api} go={go} onDirectory={openDirectory} />}{page === 'collection' && <HfCollectionPage api={api} user={user} onToast={setToast} onDirectory={() => go('datasets')} onReview={() => go('review')} />}{page === 'research' && <ResearchPage api={api} role={user.role} onToast={setToast} />}{page === 'datasets' && <DatasetsPage key={JSON.stringify(directoryFilter)} api={api} role={user.role} onToast={setToast} initialFilter={directoryFilter} />}{page === 'review' && <ReviewPage api={api} role={user.role} onToast={setToast} />}{page === 'downloads' && <DownloadsPage api={api} role={user.role} onToast={setToast} />}{page === 'publish' && <PublishPage api={api} role={user.role} onToast={setToast} />}{page === 'ops' && <OpsPage api={api} />}</main>
+      <main className="workspace-content" id="catalog-content" tabIndex={-1}>{page === 'overview' && <OverviewPage api={api} go={go} onDirectory={openDirectory} />}{page === 'collection' && <HfCollectionPage api={api} user={user} onToast={setToast} onDirectory={() => go('datasets')} onReview={() => go('review')} />}{page === 'research' && <ResearchPage api={api} role={user.role} onToast={setToast} />}{page === 'datasets' && <DatasetsPage key={JSON.stringify(directoryFilter)} api={api} role={user.role} onToast={setToast} initialFilter={directoryFilter} />}{page === 'review' && <ReviewPage api={api} role={user.role} onToast={setToast} />}{page === 'downloads' && <DownloadsPage api={api} role={user.role} onToast={setToast} />}{page === 'publish' && <PublishPage api={api} role={user.role} onToast={setToast} />}{page === 'ops' && <OpsPage api={api} role={user.role} go={go} onToast={setToast} />}</main>
       <footer className="workspace-footer"><span>小亿数据 · 科研工作区</span><span>人工核验与审批均在服务端留痕</span></footer></div>{qaMounted && <QaPanel api={api} open={qaOpen} onClose={() => setQaOpen(false)} />}<div className={`toast ${toast ? 'visible' : ''}`} role="status" aria-live="polite">{toast}</div>
   </div>;
 }

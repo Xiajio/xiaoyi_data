@@ -73,6 +73,12 @@ export interface QaSource { id: string; kind: string; title: string; locator: st
 export interface QaCitation { source_id: string; quote: string }
 export interface QaTurn { id: Id; conversation_id: Id; question: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; stage: string; answer: { claims: { text: string; citations: QaCitation[] }[]; uncertainty: string[] } | null; sources: QaSource[]; model: string | null; usage: Record<string, number>; model_calls: number; tool_calls: number; error: string | null; created_at: string; finished_at: string | null }
 export interface QaConversationDetail extends QaConversation { turns: QaTurn[] }
+export interface AgentSummaryBoard {
+  counts: Record<'generating' | 'candidate' | 'confirmed' | 'corrected' | 'failed', number>;
+  queue: { id: Id; dataset: string; dataset_id: Id; dataset_version_id: Id; position: number; attempts: number; created_at: string | null; updated_at: string | null }[];
+  recent: { id: Id; dataset: string; dataset_version_id: Id; status: string; claims: number; demoted: number; model: string; tokens: number; updated_at: string | null }[];
+  failed: { id: Id; dataset: string; dataset_version_id: Id; attempts: number; error: string; updated_at: string | null }[];
+}
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = 'ApiError'; }
 }
@@ -156,6 +162,7 @@ export class CatalogApi {
   saveCollectionSchedule(value: CollectionScheduleInput, id?: Id) { return this.post<CollectionSchedule>(id == null ? '/api/collection-schedules' : `/api/collection-schedules/${pathId(id)}`, value); }
   versionEvidence(id: Id) { return this.request<{ dataset_id: Id; dataset_version_id: Id; revision: string; provenance_status: string; items: EvidenceItem[] }>(`/api/dataset-versions/${pathId(id)}/evidence`); }
   agentSummary(datasetVersionId: Id) { return this.post<EnrichmentItem>(`/api/dataset-versions/${pathId(datasetVersionId)}/agent-summary`); }
+  agentSummaries() { return this.request<AgentSummaryBoard>('/api/agent-summaries'); }
   downloadRequests() { return this.request<{ items: DownloadRequest[] }>('/api/download-requests'); }
   requestDownload(datasetVersionId: Id, files: string[], maxBytes: number) { return this.post<DownloadRequest>('/api/download-requests', { dataset_version_id: datasetVersionId, files, max_bytes: maxBytes }); }
   decideDownload(id: Id, decision: 'approved' | 'rejected', note: string) { return this.post<DownloadRequest>(`/api/download-requests/${pathId(id)}/decision`, { decision, note }); }

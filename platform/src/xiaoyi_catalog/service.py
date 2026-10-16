@@ -206,6 +206,40 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/agent-summaries")
+    def agent_summaries() -> dict:
+        """智能体总结运行看板：当前处理/排队、状态统计、最近完成与失败（只读）。"""
+        from .summary_runtime import PRODUCER_PREFIX
+        with session_scope(engine) as session:
+            base = select(Enrichment, Dataset.source_key).join(Dataset, Dataset.id == Enrichment.dataset_id).where(
+                Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"))
+            counts = dict(session.execute(select(Enrichment.status, func.count()).where(
+                Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"))
+                .group_by(Enrichment.status)).all())
+            queue_rows = session.execute(base.where(Enrichment.status == "generating")
+                                         .order_by(Enrichment.id).limit(50)).all()
+            recent_rows = session.execute(base.where(Enrichment.status.in_(["candidate", "confirmed", "corrected"]))
+                                          .order_by(Enrichment.updated_at.desc()).limit(15)).all()
+            failed_rows = session.execute(base.where(Enrichment.status == "failed")
+                                          .order_by(Enrichment.updated_at.desc()).limit(10)).all()
+            iso = lambda value: value.isoformat() if value else None
+            return {
+                "counts": {key: counts.get(key, 0) for key in ("generating", "candidate", "confirmed", "corrected", "failed")},
+                "queue": [{"id": en.id, "dataset": key, "dataset_id": en.dataset_id,
+                           "dataset_version_id": en.dataset_version_id, "position": index + 1,
+                           "attempts": int((en.value or {}).get("attempts", 0)),
+                           "created_at": iso(en.created_at), "updated_at": iso(en.updated_at)}
+                          for index, (en, key) in enumerate(queue_rows)],
+                "recent": [{"id": en.id, "dataset": key, "dataset_version_id": en.dataset_version_id, "status": en.status,
+                            "claims": len((en.value or {}).get("claims", [])), "demoted": int((en.value or {}).get("demoted_claims", 0) or 0),
+                            "model": (en.value or {}).get("model", ""), "tokens": int((en.value or {}).get("usage", {}).get("total_tokens", 0) or 0),
+                            "updated_at": iso(en.updated_at)} for en, key in recent_rows],
+                "failed": [{"id": en.id, "dataset": key, "dataset_version_id": en.dataset_version_id,
+                            "attempts": int((en.value or {}).get("attempts", 0)),
+                            "error": str((en.value or {}).get("error", ""))[:300], "updated_at": iso(en.updated_at)}
+                           for en, key in failed_rows],
+            }
+
     @app.get("/api/review/enrichments")
     def enrichment_queue(status: str = "candidate", kind: str = "") -> dict:
         with session_scope(engine) as session:
