@@ -11,6 +11,7 @@ CORS：默认放行本机 vite 开发端口；其他来源用 XIAOYI_CATALOG_COR
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import Literal
 
@@ -29,6 +30,7 @@ from .pairing import (PairingError, approve_snapshot, export_snapshot, freeze_sn
 from .search import catalog_stats, dataset_to_dict, latest_version
 from .auth import principal, require
 from .api_platform import register_platform
+from .api_qa import register_qa
 from .dashboard import register_dashboard, modality_filter, license_filter
 
 DEFAULT_CORS = "http://localhost:5173,http://127.0.0.1:5173"
@@ -110,8 +112,11 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
                     raise HTTPException(403, "请求来源不在允许范围")
                 human_action = ("/review" in request.url.path or "/approve" in request.url.path
                                 or "/decision" in request.url.path or request.url.path.endswith("/freeze"))
-                require(request, {"reviewer", "admin"} if human_action else {"researcher", "reviewer", "admin"},
-                        human=human_action)
+                qa_action = request.method == "POST" and re.fullmatch(
+                    r"/api/qa-conversations(?:/[0-9]+/turns)?|/api/qa-turns/[0-9]+/(?:cancel|retry)", request.url.path)
+                if not qa_action:
+                    require(request, {"reviewer", "admin"} if human_action else {"researcher", "reviewer", "admin"},
+                            human=human_action)
         except HTTPException as exc:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         return await call_next(request)
@@ -326,5 +331,6 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
                                "created_at": a.created_at.isoformat() if a.created_at else None} for a in items]}
 
     register_platform(app, engine)
+    register_qa(app, engine)
     register_dashboard(app, engine)
     return app

@@ -24,6 +24,8 @@ $env:XIAOYI_CATALOG_DB = "$PWD/data/catalog.db"
 platform/.venv/Scripts/python -m xiaoyi_catalog.worker
 ```
 
+工作台 **数据问答** 支持围绕已收集目录、HF 采集状态和固定版本证据连续提问，回答保存引用来源。启用需提供现有模型 API 配置；未配置时明确提示并保留目录浏览能力。详见 [问答说明](docs/catalog-qa.md)。
+
 首页 **工作概览** 展示真实目录规模、14/30 天入库趋势、模态与许可分布、整理核验状态，以及采集任务和同步计划。点击模态或许可可进入相应目录筛选；未知信息、未完成交付如实显示。
 
 工作台 **HF 采集** 支持一键采集、每日同步、进度和失败原因查看，默认每次最多 50 条，完全不依赖 LLM；详见 [采集说明](docs/huggingface-collection.md)。未配置模型时，科研智能体任务会明确失败并保留原因；目录浏览、人工登记、核验和已批准资产交付仍可使用。Linux 将 `platform/.venv/Scripts/python` 换为 `platform/.venv/bin/python`。

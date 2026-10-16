@@ -11,7 +11,7 @@ from .models import Base
 
 
 def register_models() -> None:
-    for name in ("models_runtime", "models_assets", "models_collection"):
+    for name in ("models_runtime", "models_assets", "models_collection", "models_qa"):
         try:
             import_module(f"xiaoyi_catalog.{name}")
         except ModuleNotFoundError as exc:

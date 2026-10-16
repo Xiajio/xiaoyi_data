@@ -33,6 +33,22 @@ describe('CatalogApi', () => {
     expect(url).toBe('http://svc.test/api/overview/dashboard?days=30'); expect(init.credentials).toBe('include');
   });
 
+  it('uses authenticated owner-scoped Q&A paths and stable client request keys', async () => {
+    const fetchMock = stubFetch(200, { id: 'conversation/one', status: 'queued' });
+    const api = new CatalogApi('http://svc.test');
+    await api.qaCapabilities(); await api.qaConversations(); await api.createQaConversation('采集情况');
+    await api.qaConversation('conversation/one'); await api.askQa('conversation/one', '收集了多少？', 'logical-request-key');
+    await api.cancelQaTurn('turn/one'); await api.retryQaTurn('turn/one');
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map(([url]) => url)).toEqual([
+      'http://svc.test/api/qa-capabilities', 'http://svc.test/api/qa-conversations', 'http://svc.test/api/qa-conversations',
+      'http://svc.test/api/qa-conversations/conversation%2Fone', 'http://svc.test/api/qa-conversations/conversation%2Fone/turns',
+      'http://svc.test/api/qa-turns/turn%2Fone/cancel', 'http://svc.test/api/qa-turns/turn%2Fone/retry',
+    ]);
+    expect(calls.every(([, init]) => init.credentials === 'include')).toBe(true);
+    expect(JSON.parse(String(calls[4][1].body))).toEqual({ question: '收集了多少？', request_key: 'logical-request-key' });
+  });
+
   it('builds filtered dataset queries', async () => {
     const fetchMock = stubFetch(200, { total: 0, page: 1, size: 20, items: [] });
     const api = new CatalogApi('http://svc.test');

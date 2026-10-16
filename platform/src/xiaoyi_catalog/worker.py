@@ -95,9 +95,12 @@ def run_once(engine, *, owner: str | None = None, llm=None, adapter_factory=None
     worked = False
     try:
         with LeaseHeartbeat(engine, owner) as heartbeat:
+            from .qa_runtime import process_next_qa
+            worked = bool(process_next_qa(engine, llm=llm, guard=heartbeat.check))
+            heartbeat.check()
             from .collection_runtime import tick_collection_schedules, process_next_collection
             tick_collection_schedules(engine)
-            worked = bool(process_next_collection(engine, adapter_factory=collection_adapter_factory or adapter_factory, guard=heartbeat.check))
+            worked = bool(process_next_collection(engine, adapter_factory=collection_adapter_factory or adapter_factory, guard=heartbeat.check)) or worked
             heartbeat.check()
             with session_scope(engine) as session:
                 reconcile_reviews(session)
@@ -122,7 +125,7 @@ def run_once(engine, *, owner: str | None = None, llm=None, adapter_factory=None
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="小亿科研数据后台 worker")
     parser.add_argument("--db", default=os.getenv("XIAOYI_CATALOG_DB") or os.getenv("XIAOYI_DATABASE_URL") or os.getenv("DATABASE_URL") or os.getenv("XIAOYI_DB", "data/catalog.db"))
-    parser.add_argument("--once", action="store_true", help="处理到期计划、一个采集任务、一个智能体任务和一个已批准下载后退出")
+    parser.add_argument("--once", action="store_true", help="处理一个问答、到期计划、一个采集任务、一个智能体任务和一个已批准下载后退出")
     parser.add_argument("--poll-seconds", type=float, default=3.0)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)

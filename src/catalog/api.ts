@@ -67,6 +67,12 @@ export interface CollectionJob { id: Id; status: 'queued' | 'running' | 'complet
 export interface CollectionScheduleInput { name: string; scope: CollectionScope; interval_minutes: number; enabled: boolean }
 export interface CollectionSchedule extends CollectionScheduleInput { id: Id; next_run_at: string | null; last_run_at: string | null; last_job_id: Id | null; created_by: string; created_at?: string; updated_at?: string }
 export interface CollectionEvent { id: Id; kind?: string; stage?: string; message?: string; detail?: Record<string, unknown>; created_at?: string }
+export interface QaCapabilities { configured: boolean; model: string | null; reason: string; limits: { max_model_calls: number; max_tool_calls: number }; tools: string[] }
+export interface QaConversation { id: Id; title: string; actor: string; created_at: string; updated_at: string }
+export interface QaSource { id: string; kind: string; title: string; locator: string; content: string; captured_at: string; truncated?: boolean; dataset_id?: Id; dataset_version_id?: Id }
+export interface QaCitation { source_id: string; quote: string }
+export interface QaTurn { id: Id; conversation_id: Id; question: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; stage: string; answer: { claims: { text: string; citations: QaCitation[] }[]; uncertainty: string[] } | null; sources: QaSource[]; model: string | null; usage: Record<string, number>; model_calls: number; tool_calls: number; error: string | null; created_at: string; finished_at: string | null }
+export interface QaConversationDetail extends QaConversation { turns: QaTurn[] }
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = 'ApiError'; }
 }
@@ -96,6 +102,13 @@ export class CatalogApi {
   logout() { return this.post<void>('/api/auth/logout'); }
   overview() { return this.request<OverviewStats>('/api/overview'); }
   dashboard(days: 14 | 30 = 14) { return this.request<CatalogDashboard>(`/api/overview/dashboard?days=${days}`); }
+  qaCapabilities() { return this.request<QaCapabilities>('/api/qa-capabilities'); }
+  qaConversations() { return this.request<{ items: QaConversation[] }>('/api/qa-conversations'); }
+  createQaConversation(title?: string) { return this.post<QaConversation>('/api/qa-conversations', title ? { title } : {}); }
+  qaConversation(id: Id) { return this.request<QaConversationDetail>(`/api/qa-conversations/${pathId(id)}`); }
+  askQa(id: Id, question: string, requestKey: string) { return this.post<QaTurn>(`/api/qa-conversations/${pathId(id)}/turns`, { question, request_key: requestKey }); }
+  cancelQaTurn(id: Id) { return this.post<QaTurn>(`/api/qa-turns/${pathId(id)}/cancel`); }
+  retryQaTurn(id: Id) { return this.post<QaTurn>(`/api/qa-turns/${pathId(id)}/retry`); }
   datasets(filter: { modality?: string; licenseClass?: string; q?: string; page?: number; size?: number }) {
     const params = new URLSearchParams();
     if (filter.modality) params.set('modality', filter.modality);

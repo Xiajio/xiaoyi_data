@@ -13,7 +13,7 @@ $env:HF_ENDPOINT = "https://huggingface.co"
 
 先用 `python -m xiaoyi_catalog.auth --username admin --role admin` 创建账号，然后分别启动 API、worker 和前端。使用 README 中的虚拟环境 Python；前端开发 API 默认 `http://127.0.0.1:5280`。默认数据库路径相对进程工作目录，建议使用绝对路径避免启动到不同的库。
 
-模型通过 `XIAOYI_LLM_BASE_URL`、`XIAOYI_LLM_MODEL`、`XIAOYI_LLM_API_KEY` 配置兼容 Chat Completions 的接口。BASE_URL 应包含服务的 API 前缀（例如 /v1）。不要将密钥写入仓库或浏览器变量。未配置时科研智能体任务保留失败状态和原因，配置后可在有限重试次数内重试。HF 采集与定时同步独立运行，不需要模型配置。
+模型通过 `XIAOYI_LLM_BASE_URL`、`XIAOYI_LLM_MODEL`、`XIAOYI_LLM_API_KEY` 配置兼容 Chat Completions 的接口。BASE_URL 应包含服务的 API 前缀（例如 /v1）。不要将密钥写入仓库或浏览器变量。未配置时科研智能体任务保留失败状态和原因，配置后可在有限重试次数内重试。HF 采集与定时同步独立运行，不需要模型配置。数据问答复用上述配置，未配置时不会排队模型问题；配置变更后须同时重启 API 和 worker。问答功能与记录范围见 [问答说明](catalog-qa.md)。
 
 `XIAOYI_CATALOG_DEV_AUTH=1` 仅用于 SQLite 本机测试夹具，固定身份 local-demo，不要用于团队部署。生产环境保留真实登录。
 
