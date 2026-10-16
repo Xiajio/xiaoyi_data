@@ -155,6 +155,7 @@ export class CatalogApi {
   collectionSchedules() { return this.request<{ items: CollectionSchedule[] }>('/api/collection-schedules'); }
   saveCollectionSchedule(value: CollectionScheduleInput, id?: Id) { return this.post<CollectionSchedule>(id == null ? '/api/collection-schedules' : `/api/collection-schedules/${pathId(id)}`, value); }
   versionEvidence(id: Id) { return this.request<{ dataset_id: Id; dataset_version_id: Id; revision: string; provenance_status: string; items: EvidenceItem[] }>(`/api/dataset-versions/${pathId(id)}/evidence`); }
+  agentSummary(datasetVersionId: Id) { return this.post<EnrichmentItem>(`/api/dataset-versions/${pathId(datasetVersionId)}/agent-summary`); }
   downloadRequests() { return this.request<{ items: DownloadRequest[] }>('/api/download-requests'); }
   requestDownload(datasetVersionId: Id, files: string[], maxBytes: number) { return this.post<DownloadRequest>('/api/download-requests', { dataset_version_id: datasetVersionId, files, max_bytes: maxBytes }); }
   decideDownload(id: Id, decision: 'approved' | 'rejected', note: string) { return this.post<DownloadRequest>(`/api/download-requests/${pathId(id)}/decision`, { decision, note }); }

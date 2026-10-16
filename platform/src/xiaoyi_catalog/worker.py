@@ -98,6 +98,9 @@ def run_once(engine, *, owner: str | None = None, llm=None, adapter_factory=None
             from .qa_runtime import process_next_qa
             worked = bool(process_next_qa(engine, llm=llm, guard=heartbeat.check))
             heartbeat.check()
+            from .summary_runtime import process_next_summary
+            worked = bool(process_next_summary(engine, llm=llm, guard=heartbeat.check)) or worked
+            heartbeat.check()
             from .collection_runtime import tick_collection_schedules, process_next_collection
             tick_collection_schedules(engine)
             worked = bool(process_next_collection(engine, adapter_factory=collection_adapter_factory or adapter_factory, guard=heartbeat.check)) or worked

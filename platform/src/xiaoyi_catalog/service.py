@@ -188,6 +188,24 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
                                      "value": en.value, "evidence_ids": en.evidence_ids, "dataset_version_id": en.dataset_version_id} for en in enrichments],
                     "versions": [{"id": v.id, "revision": v.revision, "provenance_status": v.provenance_status, "metadata": v.metadata_json} for v in versions]}
 
+    @app.post("/api/dataset-versions/{dataset_version_id}/agent-summary", status_code=202)
+    def agent_summary(dataset_version_id: int, request: Request) -> dict:
+        """提交智能体核验总结：只落 generating 记录，模型调用由后台 worker 执行。"""
+        from .qa_runtime import capabilities
+        from .summary_runtime import submit_summary
+        status = capabilities()
+        if not status["configured"]:
+            raise HTTPException(503, status["reason"])
+        actor = principal(request)
+        with session_scope(engine) as session:
+            version = session.get(DatasetVersion, dataset_version_id)
+            if version is None:
+                raise _404("数据集版本", dataset_version_id)
+            try:
+                return submit_summary(session, version.dataset_id, dataset_version_id, actor.username)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/review/enrichments")
     def enrichment_queue(status: str = "candidate", kind: str = "") -> dict:
         with session_scope(engine) as session:
