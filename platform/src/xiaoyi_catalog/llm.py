@@ -100,7 +100,13 @@ class LLMClient:
             raw = message["content"]
             if not isinstance(raw, str) or len(raw) > 100_000:
                 raise ModelOutputError("模型输出为空或超过限制")
-            value = schema.model_validate_json(raw)
+            # 兼容模型偶发的 Markdown 代码围栏包裹；其余非 JSON 输出仍判为契约违例。
+            stripped = raw.strip()
+            if stripped.startswith("```") and stripped.endswith("```"):
+                stripped = stripped[3:-3].strip()
+                if stripped.startswith("json"):
+                    stripped = stripped[4:].strip()
+            value = schema.model_validate_json(stripped)
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise ModelOutputError("模型输出不符合结构契约") from exc
         usage = {key: max(0, int(body.get("usage", {}).get(key, 0) or 0))

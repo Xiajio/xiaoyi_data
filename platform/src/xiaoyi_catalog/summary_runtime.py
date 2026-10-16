@@ -19,7 +19,7 @@ from .qa_tools import _safe
 PRODUCER_PREFIX = "agent-summary/"
 PRODUCER = PRODUCER_PREFIX + "1"
 PROMPT_VERSION = "agent-summary/1"
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
 MAX_EVIDENCE = 4
 MAX_EXCERPT_CHARS = 3000
 METADATA_FIELDS = ("name", "source_key", "author", "license", "license_class", "modalities",

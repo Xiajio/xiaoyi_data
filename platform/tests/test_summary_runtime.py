@@ -105,9 +105,11 @@ def test_forged_citation_fails_after_bounded_attempts(engine):
     assert process_next_summary(engine, llm=model)
     assert read(engine, ident).status == "generating"  # 首次失败保留重试
     assert process_next_summary(engine, llm=model)
+    assert read(engine, ident).status == "generating"
+    assert process_next_summary(engine, llm=model)
     row = read(engine, ident)
     assert row.status == "failed" and "未提供的证据编号" in row.value["error"]
-    assert row.value["attempts"] == 2
+    assert row.value["attempts"] == 3
     # 失败后再次提交重置为生成中（重试语义）
     assert submit(engine, dataset, version)["status"] == "generating"
     assert read(engine, ident).value["attempts"] == 0
