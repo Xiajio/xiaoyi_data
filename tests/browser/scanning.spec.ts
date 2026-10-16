@@ -27,6 +27,7 @@ async function prepare(page:Page,state:DemoState) {
   },{storageKey:key(state.sessionId),state});
 }
 async function navigate(surface:Surface,label:string) {
+  await expect(surface.getByTestId('demo-app')).toBeVisible();
   const sidebar=surface.locator('.sidebar');
   if(!await sidebar.isVisible())await surface.getByLabel('切换导航').click();
   await sidebar.getByRole('button',{name:label,exact:true}).click();
@@ -75,7 +76,7 @@ async function noOverflow(surface:Surface,width:number) {
 
 test('manual scan classifies entries, imports only new assets, processes inventory and deduplicates repeat scans',async({page})=>{
   test.setTimeout(60000);const errors=watchErrors(page);
-  const initial=managerState('standalone',true);await prepare(page,initial);await page.goto('/');
+  const initial=managerState('standalone',true);await prepare(page,initial);await page.goto('/?mode=demo');
   await navigate(page,'工作概览');await counts(page,{total:12,pending:10,processing:0,processed:0,failed:0,restricted:2});await capture(page,'inventory-1440');
   await navigate(page,'数据处理');await counts(page,{total:12,pending:10,processing:0,processed:0,failed:0,restricted:2});
   await startRun(page);await counts(page,{total:12,pending:0,processing:10,processed:0,restricted:2});
@@ -112,7 +113,7 @@ test('manual scan classifies entries, imports only new assets, processes invento
 
 test('automatic scans wait for the configured interval and stop scheduling when disabled',async({page})=>{
   test.setTimeout(60000);const errors=watchErrors(page);
-  await prepare(page,managerState());await page.goto('/');await navigate(page,'数据接入');
+  await prepare(page,managerState());await page.goto('/?mode=demo');await navigate(page,'数据接入');
   await page.getByTestId('scan-directory').selectOption('inbox');await page.getByTestId('scan-recursive').check();
   await page.getByTestId('scan-interval').selectOption('15');await page.getByTestId('scan-auto').check();
   await expect.poll(async()=>(await saved(page)).scanConfig.autoEnabled).toBe(true);
@@ -135,7 +136,7 @@ test('automatic scans wait for the configured interval and stop scheduling when 
 });
 
 test('refresh interrupts a running scan and requires explicit re-enabling of auto scanning',async({page})=>{
-  const errors=watchErrors(page);await prepare(page,managerState());await page.goto('/');await navigate(page,'数据接入');
+  const errors=watchErrors(page);await prepare(page,managerState());await page.goto('/?mode=demo');await navigate(page,'数据接入');
   await page.getByTestId('scan-interval').selectOption('15');await page.getByTestId('scan-auto').check();
   await page.clock.runFor(15100);await expect.poll(async()=>(await saved(page)).scans[0]?.status).toBe('running');
   const scanId=(await saved(page)).scans[0].id;
@@ -149,7 +150,7 @@ test('refresh interrupts a running scan and requires explicit re-enabling of aut
 });
 
 test('stopping a manual scan prevents late progress or import',async({page})=>{
-  const errors=watchErrors(page);await prepare(page,managerState());await page.goto('/');await navigate(page,'数据接入');
+  const errors=watchErrors(page);await prepare(page,managerState());await page.goto('/?mode=demo');await navigate(page,'数据接入');
   await page.getByTestId('scan-start').click();await expect.poll(async()=>(await saved(page)).scans[0]?.status).toBe('running');
   await page.getByTestId('scan-stop').click();await expect.poll(async()=>(await saved(page)).scans[0]?.status).toBe('interrupted');
   const stopped=structuredClone((await saved(page)).scans[0]);
@@ -181,7 +182,7 @@ test('host session switch and reset revoke old scan callbacks without writing in
 for(const width of [520,1050]){
   test(`scan controls and whole-inventory overview remain usable at ${width}px without page overflow`,async({page})=>{
     test.setTimeout(60000);const errors=watchErrors(page);await page.setViewportSize({width,height:1000});
-    await prepare(page,managerState());await page.goto('/');await navigate(page,'工作概览');
+    await prepare(page,managerState());await page.goto('/?mode=demo');await navigate(page,'工作概览');
     await counts(page,{total:12,pending:10,processed:0,processing:0,failed:0,restricted:2});await noOverflow(page,width);await capture(page,'inventory-'+width);
     await navigate(page,'数据接入');await noOverflow(page,width);
     await page.getByTestId('scan-directory').selectOption('archive');await page.getByTestId('scan-recursive').uncheck();await page.getByTestId('scan-interval').selectOption('60');

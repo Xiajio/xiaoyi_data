@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .match import missing_for_requirement
-from .models import Dataset, DatasetVersion, Evidence, Idea, Pairing, Snapshot, utcnow
-from .search import dataset_to_dict
+from .models import Dataset, DatasetVersion, Evidence, Enrichment, Review, Idea, Pairing, Snapshot, utcnow
+from .search import version_to_dict
 
 IDEA_REQUIRED = ("external_id", "title", "requirements")
 
@@ -24,7 +26,7 @@ class PairingError(ValueError):
 
 def upsert_idea(session: Session, payload: dict) -> Idea:
     """按 external_id 幂等导入思路卡；重复导入更新陈述与需求，保留导入时间。"""
-    missing = [key for key in IDEA_REQUIRED if not payload.get(key)]
+    missing = [key for key in IDEA_REQUIRED if key not in payload or (key != "requirements" and not payload.get(key))]
     if missing:
         raise PairingError(f"思路卡缺少必填字段：{', '.join(missing)}")
     if not isinstance(payload["requirements"], dict):
@@ -37,6 +39,10 @@ def upsert_idea(session: Session, payload: dict) -> Idea:
         session.add(idea)
         session.flush()
     else:
+        if idea.requirements != payload["requirements"]:
+            for pending in session.scalars(select(Snapshot).where(Snapshot.idea_id == idea.id, Snapshot.status == "pending")):
+                pending.status = "invalidated"
+                pending.note = (pending.note + "；" if pending.note else "") + "科研硬约束已变更"
         idea.title = str(payload["title"])
         idea.statement = str(payload.get("statement", ""))
         idea.requirements = payload["requirements"]
@@ -44,11 +50,9 @@ def upsert_idea(session: Session, payload: dict) -> Idea:
     return idea
 
 
-def _latest_card_evidence_id(session: Session, dataset_id: int) -> list[int]:
-    row = session.scalar(
-        select(Evidence.id).where(Evidence.dataset_id == dataset_id, Evidence.kind == "card").order_by(Evidence.id.desc())
-    )
-    return [row] if row is not None else []
+def _latest_card_evidence_id(session: Session, dataset_version_id: int) -> list[int]:
+    return list(session.scalars(select(Evidence.id).where(Evidence.dataset_version_id == dataset_version_id)
+                               .order_by(Evidence.id)))
 
 
 def propose_pairing(session: Session, idea_payload: dict, dataset_version_ids: list[int], rationale: str,
@@ -74,10 +78,10 @@ def propose_pairing(session: Session, idea_payload: dict, dataset_version_ids: l
         if prior is not None:
             existing.append({"id": prior.id, "dataset": dataset.source_key, "status": prior.status})
             continue
-        warnings = missing_for_requirement(dataset_to_dict(dataset), idea.requirements)
+        warnings = missing_for_requirement(version_to_dict(session, version), idea.requirements)
         pairing = Pairing(idea_id=idea.id, dataset_version_id=version_id, rationale=rationale,
                           proposed_by=proposed_by, warnings=warnings,
-                          evidence_ids=_latest_card_evidence_id(session, dataset.id))
+                          evidence_ids=_latest_card_evidence_id(session, version.id))
         session.add(pairing)
         session.flush()
         created.append({"id": pairing.id, "dataset": dataset.source_key, "status": "pending", "warnings": warnings})
@@ -89,38 +93,129 @@ def propose_pairing(session: Session, idea_payload: dict, dataset_version_ids: l
 
 def review_pairing(session: Session, pairing_id: int, decision: str, note: str = "") -> Pairing:
     """人工核验配对：confirmed / rejected。驳回会使包含该配对的待审批快照失效。"""
-    if decision not in ("confirmed", "rejected"):
-        raise PairingError("配对核验只支持 confirmed / rejected")
+    if decision not in ("confirmed", "rejected", "needs-info"):
+        raise PairingError("配对核验只支持 confirmed / rejected / needs-info")
     pairing = session.get(Pairing, pairing_id)
     if pairing is None:
         raise PairingError(f"配对 {pairing_id} 不存在")
     if pairing.status == decision:
         raise PairingError(f"配对 {pairing_id} 已是 {decision} 状态")
+    if decision == "confirmed":
+        version = session.get(DatasetVersion, pairing.dataset_version_id)
+        if version and version.provenance_status == "verified":
+            # The explicit human confirmation may replace unbound legacy pointers with newly recovered evidence.
+            existing = [session.get(Evidence, eid) for eid in pairing.evidence_ids]
+            if any(e is None or e.dataset_version_id != version.id for e in existing):
+                pairing.evidence_ids = _latest_card_evidence_id(session, version.id)
+        _validate_pairing(session, pairing)
     pairing.status = decision
-    if decision == "rejected":
+    if decision != "confirmed":
         for snapshot in session.scalars(select(Snapshot).where(Snapshot.idea_id == pairing.idea_id, Snapshot.status == "pending")):
             if pairing.id in snapshot.pairing_ids:
                 snapshot.status = "invalidated"
-                snapshot.note = (snapshot.note + "；" if snapshot.note else "") + f"配对 {pairing.id} 被驳回"
+                snapshot.note = (snapshot.note + "；" if snapshot.note else "") + f"配对 {pairing.id} 改为 {decision}"
     return pairing
 
 
+def _validate_pairing(session: Session, pairing: Pairing) -> None:
+    version = session.get(DatasetVersion, pairing.dataset_version_id)
+    idea = session.get(Idea, pairing.idea_id)
+    if version is None or version.provenance_status != "verified" or not version.metadata_json:
+        from .provenance import RECOVERY_HELP
+        raise PairingError(RECOVERY_HELP)
+    gaps = missing_for_requirement(version_to_dict(session, version), idea.requirements)
+    if gaps:
+        raise PairingError("科研硬约束不满足：" + "；".join(gaps))
+    for evidence_id in pairing.evidence_ids:
+        evidence = session.get(Evidence, evidence_id)
+        if evidence is None or evidence.dataset_version_id != version.id:
+            raise PairingError("证据未绑定所选数据集版本")
+
+
+def _approved_asset(session, asset, _visited=None) -> bool:
+    from .downloads import digest_json
+    from .models_assets import Asset, DownloadRequest
+    visited = set(_visited or ())
+    if asset.id in visited:
+        return False
+    visited.add(asset.id)
+    request = session.get(DownloadRequest, asset.download_request_id)
+    if request is None or request.status != "completed" or not request.decided_by:
+        return False
+    if request.approved_hash != request.manifest_hash or request.manifest_hash != digest_json(request.manifest):
+        return False
+    if asset.origin == "derived":
+        inputs = asset.recipe.get("inputs", [])
+        version = session.get(DatasetVersion, asset.dataset_version_id)
+        if not inputs or sorted(i.get("asset_id") for i in inputs) != sorted(asset.parent_asset_ids):
+            return False
+        if version is None or version.kind != "derived" or version.parent_version_id != inputs[0].get("dataset_version_id"):
+            return False
+        for item in inputs:
+            parent = session.get(Asset, item.get("asset_id"))
+            if parent is None or parent.sha256 != item.get("sha256") or parent.dataset_version_id != item.get("dataset_version_id"):
+                return False
+            if not _approved_asset(session, parent, visited):
+                return False
+        return True
+    if request.dataset_version_id != asset.dataset_version_id:
+        return False
+    return any(item.get("path") == asset.path and item.get("size") == asset.size_bytes
+               and (not item.get("sha256") or item["sha256"] == asset.sha256)
+               for item in request.manifest.get("files", []))
+
+
 def _frozen_content(session: Session, idea: Idea, pairings: list[Pairing]) -> dict:
+    from .downloads import asset_to_dict
+    from .models_assets import Asset, QualityReport
+    from .profiling import public_report
     entries = []
+    version_ids = [p.dataset_version_id for p in pairings]
     for pairing in pairings:
         version = session.get(DatasetVersion, pairing.dataset_version_id)
-        dataset = session.get(Dataset, version.dataset_id)
         entries.append({
-            "pairing_id": pairing.id,
-            "dataset": dataset_to_dict(dataset),
-            "revision": version.revision,
-            "rationale": pairing.rationale,
-            "warnings": pairing.warnings,
-            "evidence_ids": pairing.evidence_ids,
+            "pairing_id": pairing.id, "dataset": version_to_dict(session, version),
+            "dataset_version_id": version.id, "provenance_status": version.provenance_status,
+            "revision": version.revision, "rationale": pairing.rationale,
+            "warnings": list(pairing.warnings), "evidence_ids": list(pairing.evidence_ids),
+            "evidence": [{"id": e.id, "kind": e.kind, "excerpt": e.excerpt,
+                          "location": e.location, "dataset_version_id": e.dataset_version_id}
+                         for e in session.scalars(select(Evidence).where(Evidence.dataset_version_id == version.id))],
         })
-    return {"idea": {"external_id": idea.external_id, "title": idea.title, "statement": idea.statement,
+    assets = [a for a in session.scalars(select(Asset).where(Asset.dataset_version_id.in_(version_ids)).order_by(Asset.id))
+              if _approved_asset(session, a)]
+    asset_ids = [a.id for a in assets]
+    reports = session.scalars(select(QualityReport).where(QualityReport.asset_id.in_(asset_ids))).all()
+    enrichments = session.scalars(select(Enrichment).where(Enrichment.dataset_version_id.in_(version_ids),
+                                                        Enrichment.status == "confirmed")).all()
+    pairing_ids, enrichment_ids = [p.id for p in pairings], [e.id for e in enrichments]
+    reviews = session.scalars(select(Review).where(
+        ((Review.target_kind == "pairing") & Review.target_id.in_(pairing_ids)) |
+        ((Review.target_kind == "enrichment") & Review.target_id.in_(enrichment_ids))).order_by(Review.id)).all()
+    return deepcopy({"idea": {"external_id": idea.external_id, "title": idea.title, "statement": idea.statement,
                      "requirements": idea.requirements, "source_refs": idea.source_refs},
-            "datasets": entries}
+            "datasets": entries,
+            "assets": [{**asset_to_dict(a), "download_request_id": a.download_request_id} for a in assets],
+            "reports": [{"asset_id": r.asset_id, "producer": r.producer, "value": public_report(r.value)} for r in reports],
+            "enrichments": [{"id": e.id, "dataset_version_id": e.dataset_version_id, "kind": e.kind,
+                             "value": e.value, "producer": e.producer, "evidence_ids": e.evidence_ids} for e in enrichments],
+            "reviews": [{"id": r.id, "target_kind": r.target_kind, "target_id": r.target_id,
+                         "decision": r.decision, "note": r.note, "role": r.role} for r in reviews]})
+
+
+def _validate_frozen_assets(session, snapshot) -> None:
+    from .downloads import storage_root, sha256_file
+    from .models_assets import Asset
+    root = storage_root()
+    for frozen in snapshot.content.get("assets", []):
+        asset = session.get(Asset, frozen["id"])
+        if asset is None or not _approved_asset(session, asset):
+            raise PairingError("冻结文件不再来自完整批准的获取请求")
+        if any(getattr(asset, key) != frozen[key] for key in ("dataset_version_id", "path", "sha256", "size_bytes", "download_request_id")):
+            raise PairingError("冻结文件清单已变化")
+        path = (root / asset.storage_key).resolve()
+        if not path.is_relative_to(root) or not path.is_file() or sha256_file(path) != frozen["sha256"]:
+            raise PairingError("冻结文件缺失或校验失败")
 
 
 def freeze_snapshot(session: Session, idea_external_id: str, pairing_ids: list[int] | None = None, *, note: str = "") -> Snapshot:
@@ -132,7 +227,9 @@ def freeze_snapshot(session: Session, idea_external_id: str, pairing_ids: list[i
     chosen = [p for p in pairings if p.status == "confirmed"] if pairing_ids is None else [
         session.get(Pairing, pid) for pid in pairing_ids
     ]
-    chosen = [p for p in chosen if p is not None]
+    if any(p is None for p in chosen):
+        raise PairingError("指定配对不存在")
+    chosen = list({p.id: p for p in chosen}.values())
     if not chosen:
         raise PairingError("没有已确认的配对可冻结")
     unconfirmed = [p.id for p in chosen if p.status != "confirmed"]
@@ -140,6 +237,8 @@ def freeze_snapshot(session: Session, idea_external_id: str, pairing_ids: list[i
         raise PairingError(f"配对 {unconfirmed} 未确认，不能冻结")
     if any(p.idea_id != idea.id for p in chosen):
         raise PairingError("配对不属于该思路")
+    for pairing in chosen:
+        _validate_pairing(session, pairing)
     pending = session.scalar(select(Snapshot).where(Snapshot.idea_id == idea.id, Snapshot.status == "pending"))
     if pending is not None:
         raise PairingError(f"已有待审批快照 V{pending.version}，请先审批或使其失效")
@@ -161,6 +260,12 @@ def approve_snapshot(session: Session, snapshot_id: int) -> Snapshot:
     if any(p is None or p.status != "confirmed" for p in pairings):
         snapshot.status = "invalidated"
         raise PairingError("快照内配对已不再全部确认，快照已失效")
+    idea = session.get(Idea, snapshot.idea_id)
+    if snapshot.content.get("idea", {}).get("requirements") != idea.requirements:
+        raise PairingError("思路硬约束已变更，必须重新冻结快照")
+    for pairing in pairings:
+        _validate_pairing(session, pairing)
+    _validate_frozen_assets(session, snapshot)
     snapshot.status = "approved"
     snapshot.approved_at = utcnow()
     return snapshot
@@ -178,6 +283,9 @@ def snapshot_status(session: Session, idea_external_id: str) -> dict:
                       "warnings": p.warnings, "proposed_by": p.proposed_by} for p in pairings],
         "snapshots": [{"id": s.id, "version": s.version, "status": s.status,
                        "pairing_ids": s.pairing_ids,
+                       "bundle_available": bool(s.content.get("assets")) and
+                           {a.get("dataset_version_id") for a in s.content.get("assets", [])} ==
+                           {d.get("dataset_version_id") for d in s.content.get("datasets", [])},
                        "approved_at": s.approved_at.isoformat() if s.approved_at else None} for s in snapshots],
     }
 

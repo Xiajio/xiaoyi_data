@@ -73,14 +73,14 @@ async function noToolOverflow(frame:FrameLocator,width:number) {
 
 test('production assets work under /demo/ for standalone and host lifecycle without 404s or console errors',async ({page}) => {
   const failures=collectFailures(page);
-  await page.goto(`${origin}/demo/`);
+  await page.goto(`${origin}/demo/?mode=demo`);
   await expect(page.getByTestId('demo-app')).toBeVisible();
   await expect(page.getByRole('heading',{name:'数据处理',exact:true})).toBeVisible();
   const standaloneLink=page.getByRole('link',{name:/查看宿主接入示例/});
   expect(await standaloneLink.evaluate(element => (element as HTMLAnchorElement).href)).toBe(`${origin}/demo/host.html`);
   await page.goto(`${origin}/demo/host.html`);await hostReady(page);
   const frame=page.frameLocator('#frame-slot iframe');
-  expect(await page.locator('#frame-slot iframe').getAttribute('src')).toContain(`${origin}/demo/index.html?embed=1&hostOrigin=`);
+  expect(await page.locator('#frame-slot iframe').getAttribute('src')).toContain(`${origin}/demo/index.html?mode=demo&embed=1&hostOrigin=`);
   await expect(frame.getByRole('heading',{name:'工作概览',exact:true})).toBeVisible();
   await page.locator('#theme').selectOption('dark');await expect(frame.locator('html')).toHaveAttribute('data-theme','dark');
   await page.locator('#page').selectOption('cases');await page.locator('#navigate').click();

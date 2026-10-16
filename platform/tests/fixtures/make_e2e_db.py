@@ -2,7 +2,7 @@
 
 用法：python make_e2e_db.py <目标 db 路径>
 内容：3 个数据集（text/image/3d 各一，许可分级各异）+ 卡片证据 + 整理候选
-+ 1 张思路卡 + 2 条配对（一条待核验、一条已确认）+ 1 条采集记录。
++ 1 张思路卡 + 2 条待核验配对（一条满足约束，一条模态与许可不匹配）+ 1 条采集记录。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from xiaoyi_catalog.collect import collect
 from xiaoyi_catalog.db import create_engine_for, init_db, session_scope
 from xiaoyi_catalog.enrich import enrich_all
 from xiaoyi_catalog.models import Dataset, DatasetVersion
-from xiaoyi_catalog.pairing import propose_pairing, review_pairing
+from xiaoyi_catalog.pairing import propose_pairing
 
 
 class FixtureAdapter:
@@ -68,10 +68,9 @@ def main(target: str) -> None:
                 "statement": "端到端验证用的思路卡", "requirements": {"modalities": ["text"], "license_class": ["permissive"]},
                 "source_refs": ["10.0000/e2e"]}
         pending = propose_pairing(session, idea, [version_ids["acme/zh-news"]], "许可宽松且为中文文本")["created"][0]["id"]
-        confirmed = propose_pairing(session, {**idea, "title": "中文新闻分类基准"},
+        incompatible = propose_pairing(session, {**idea, "title": "中文新闻分类基准"},
                                     [version_ids["acme/photo-cls"]], "对照用图像基准")["created"][0]["id"]
-        review_pairing(session, confirmed, "confirmed", "预置已确认配对")
-        assert pending != confirmed
+        assert pending != incompatible
     engine.dispose()
     print(f"E2E_DB_OK {path}")
 

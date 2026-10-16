@@ -30,7 +30,7 @@ def client(tmp_path):
     ]), CollectScope())
     enrich_all(engine)
     engine.dispose()
-    app = create_app(str(db))
+    app = create_app(str(db), dev_auth=True)
     with TestClient(app) as test_client:
         yield test_client
 

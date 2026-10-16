@@ -119,13 +119,38 @@ def _split_ids(text: str) -> list[int]:
     return [int(item) for item in text.split(",") if item.strip()]
 
 
-def _guarded(args: argparse.Namespace, action) -> int:
+def _cli_human(session, args):
+    from getpass import getpass
+    from sqlalchemy import select
+    from .auth import resolve, check_password, Principal
+    from .models_assets import AuthUser
+    token = os.environ.get(getattr(args, "token_env", "XIAOYI_CLI_TOKEN"), "")
+    actor = resolve(session, token) if token else None
+    if not token and getattr(args, "username", None):
+        user = session.scalar(select(AuthUser).where(AuthUser.username == args.username, AuthUser.enabled.is_(True)))
+        password = getpass("Password: ")
+        if user and check_password(password, user.password_hash):
+            actor = Principal(user.id, user.username, user.role, user.kind)
+    if actor is None or actor.kind != "human" or actor.role not in {"reviewer", "admin"}:
+        raise PermissionError("此人工操作须通过本地人类 reviewer/admin 账号认证；使用 --username 或 XIAOYI_CLI_TOKEN")
+    return actor
+
+
+def _guarded(args: argparse.Namespace, action, *, audit_action: str | None = None) -> int:
     engine = create_engine_for(_resolve_db(args))
     init_db(engine)
     try:
         with session_scope(engine) as session:
+            actor = _cli_human(session, args) if audit_action else None
             result = action(session)
-    except PairingError as exc:
+            if actor is not None:
+                from .models import Audit, Review
+                session.add(Audit(actor=actor.username, action=audit_action,
+                                  detail=json.dumps(result, ensure_ascii=False)))
+                if audit_action == "pairing_review_cli":
+                    session.add(Review(target_kind="pairing", target_id=args.pairing,
+                                       decision=args.decision, note=args.note, role=actor.role))
+    except (PairingError, PermissionError) as exc:
         print(f"操作未完成：{exc}", file=sys.stderr)
         return 1
     finally:
@@ -170,16 +195,16 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
 
 def cmd_review(args: argparse.Namespace) -> int:
-    return _guarded(args, lambda session: {"id": review_pairing(session, args.pairing, args.decision, args.note).id, "status": args.decision})
+    return _guarded(args, lambda session: {"id": review_pairing(session, args.pairing, args.decision, args.note).id, "status": args.decision}, audit_action="pairing_review_cli")
 
 
 def cmd_freeze(args: argparse.Namespace) -> int:
     pairing_ids = _split_ids(args.pairings) if args.pairings else None
-    return _guarded(args, lambda session: {"snapshot_id": freeze_snapshot(session, args.idea, pairing_ids, note=args.note).id})
+    return _guarded(args, lambda session: {"snapshot_id": freeze_snapshot(session, args.idea, pairing_ids, note=args.note).id}, audit_action="snapshot_freeze_cli")
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
-    return _guarded(args, lambda session: {"snapshot_id": approve_snapshot(session, args.snapshot).id, "status": "approved"})
+    return _guarded(args, lambda session: {"snapshot_id": approve_snapshot(session, args.snapshot).id, "status": "approved"}, audit_action="snapshot_approve_cli")
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -211,6 +236,8 @@ def cmd_export(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="xiaoyi-catalog", description="小亿数据集目录：采集与检索（M1）")
     parser.add_argument("--db", default="", help=f"SQLite 路径（默认 {DEFAULT_DB} 或 XIAOYI_CATALOG_DB）")
+    parser.add_argument("--username", help="人工审核账号；需要交互输入密码，也可用 XIAOYI_CLI_TOKEN")
+    parser.add_argument("--token-env", default="XIAOYI_CLI_TOKEN", help="会话 token 环境变量名")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init-db", help="建库建表").set_defaults(func=cmd_init_db)
@@ -259,9 +286,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     review_parser = sub.add_parser("review", help="人工核验配对（confirmed/rejected）")
     review_parser.add_argument("--pairing", type=int, required=True)
-    review_parser.add_argument("--decision", required=True, choices=["confirmed", "rejected"])
+    review_parser.add_argument("--decision", required=True, choices=["confirmed", "rejected", "needs-info"])
     review_parser.add_argument("--note", default="")
     review_parser.add_argument("--json", action="store_true")
+    review_parser.add_argument("--username", default=argparse.SUPPRESS, help="人工审核账号")
     review_parser.set_defaults(func=cmd_review)
 
     freeze_parser = sub.add_parser("freeze", help="冻结思路下已确认配对为快照")
@@ -269,11 +297,13 @@ def build_parser() -> argparse.ArgumentParser:
     freeze_parser.add_argument("--pairings", default="", help="逗号分隔配对 id；缺省纳入全部已确认")
     freeze_parser.add_argument("--note", default="")
     freeze_parser.add_argument("--json", action="store_true")
+    freeze_parser.add_argument("--username", default=argparse.SUPPRESS, help="人工审核账号")
     freeze_parser.set_defaults(func=cmd_freeze)
 
     approve_parser = sub.add_parser("approve", help="批准待审批快照")
     approve_parser.add_argument("--snapshot", type=int, required=True)
     approve_parser.add_argument("--json", action="store_true")
+    approve_parser.add_argument("--username", default=argparse.SUPPRESS, help="人工审核账号")
     approve_parser.set_defaults(func=cmd_approve)
 
     status_parser = sub.add_parser("status", help="查询思路的配对与快照状态")

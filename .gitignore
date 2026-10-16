@@ -5,3 +5,13 @@ test-results/
 playwright-report/
 *.tsbuildinfo
 .env.local
+
+.env
+platform/install.log
+platform/*.log
+platform/*.checkpoints.sqlite*
+
+platform/build/
+
+.playwright-cli/
+/data/

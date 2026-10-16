@@ -46,7 +46,7 @@ function close() {
 function mount() {
  bridge?.dispose();iframe?.remove();slot.replaceChildren();
  iframe = document.createElement('iframe');iframe.title = '小亿数据演示工作台';iframe.referrerPolicy = 'strict-origin';
- const url = new URL('index.html',document.baseURI);url.searchParams.set('embed','1');url.searchParams.set('hostOrigin',location.origin);iframe.src = url.href;
+ const url = new URL('index.html',document.baseURI);url.searchParams.set('mode','demo');url.searchParams.set('embed','1');url.searchParams.set('hostOrigin',location.origin);iframe.src = url.href;
  bridge = createDataDemoHost({iframe,frameOrigin:url.origin,sessionId,initialPage:page.value as PageId,theme:theme.value as Theme,onEvent(event) {
    record(event.type,event.payload);
    if (event.type === 'ready') status.textContent = '工具已就绪 · 仅合成演示数据';

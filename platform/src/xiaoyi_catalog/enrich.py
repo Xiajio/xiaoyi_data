@@ -15,9 +15,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.engine import Engine
 
 from .db import session_scope
-from .models import Dataset, Enrichment, Evidence
+from .models import Dataset, DatasetVersion, Enrichment, Evidence
+from .search import latest_version, version_to_dict
 
-PRODUCER = "enrich/0.1"
+PRODUCER = "enrich/0.2"
 FRONTMATTER_LIMIT = 64_000
 
 
@@ -67,6 +68,8 @@ def schema_summary(card_text: str) -> dict:
 def quality_signals(dataset: Dataset, *, now: datetime | None = None) -> dict:
     """质量分级（low/medium/high）+ 逐条依据。分级是启发式规则，不是统计置信度。"""
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     reasons: list[str] = []
     score = 0
     card_len = len(dataset.card_text.strip())
@@ -87,7 +90,12 @@ def quality_signals(dataset: Dataset, *, now: datetime | None = None) -> dict:
         score += 1
         reasons.append(f"下载量 {dataset.downloads} 较高")
     if dataset.source_modified_at:
-        days = (now - dataset.source_modified_at).days
+        modified = dataset.source_modified_at
+        if isinstance(modified, str):
+            modified = datetime.fromisoformat(modified)
+        if modified.tzinfo is None:
+            modified = modified.replace(tzinfo=timezone.utc)
+        days = (now - modified).days
         if days <= 180:
             score += 1
             reasons.append("近半年有更新")
@@ -96,30 +104,41 @@ def quality_signals(dataset: Dataset, *, now: datetime | None = None) -> dict:
     else:
         reasons.append("来源更新日期未知")
     level = "high" if score >= 4 else "medium" if score >= 2 else "low"
-    return {"level": level, "score": score, "reasons": reasons}
+    return {"level": level, "score": score, "reasons": reasons, "label": "目录信息完整度", "measurement_kind": "metadata_heuristic"}
 
 
-def _card_evidence_id(session, dataset_id: int) -> list[int]:
-    row = session.scalar(
-        select(Evidence.id).where(Evidence.dataset_id == dataset_id, Evidence.kind == "card").order_by(Evidence.id.desc())
-    )
-    return [row] if row is not None else []
+def _card_evidence_id(session, dataset_id: int, dataset_version_id: int | None) -> list[int]:
+    return list(session.scalars(select(Evidence.id).where(Evidence.dataset_id == dataset_id,
+        Evidence.dataset_version_id == dataset_version_id, Evidence.kind == "card"))) if dataset_version_id else []
 
 
-def enrich_dataset(session, dataset: Dataset) -> list[Enrichment]:
-    """对单个数据集产出 schema 与 quality 两类候选；同 kind 旧候选被取代（supersede 语义用删除重算实现）。"""
-    evidence_ids = _card_evidence_id(session, dataset.id)
-    session.execute(
-        delete(Enrichment).where(Enrichment.dataset_id == dataset.id, Enrichment.kind.in_(["schema", "quality"]), Enrichment.status == "candidate")
-    )
+def enrich_version(session, version: DatasetVersion) -> list[Enrichment]:
+    from types import SimpleNamespace
+    if version.provenance_status != "verified" or not version.metadata_json:
+        from .provenance import RECOVERY_HELP
+        raise ValueError(RECOVERY_HELP)
+    item = version_to_dict(session, version)
+    item.setdefault("source_modified_at", None)
+    evidence_ids = _card_evidence_id(session, version.dataset_id, version.id)
+    # Retain reviewed/historical outputs and preserve references from reviews and snapshots.
+    for old in session.scalars(select(Enrichment).where(Enrichment.dataset_version_id == version.id,
+            Enrichment.kind.in_(["schema", "quality"]), Enrichment.status == "candidate")):
+        old.status = "superseded"
     entries = [
-        Enrichment(dataset_id=dataset.id, kind="schema", producer=PRODUCER, value=schema_summary(dataset.card_text),
-                   confidence="", evidence_ids=evidence_ids),
-        Enrichment(dataset_id=dataset.id, kind="quality", producer=PRODUCER, value=quality_signals(dataset),
-                   confidence="", evidence_ids=evidence_ids),
+        Enrichment(dataset_id=version.dataset_id, dataset_version_id=version.id, kind="schema", producer=PRODUCER,
+                   value=schema_summary(item["card_text"]), confidence="", evidence_ids=evidence_ids),
+        Enrichment(dataset_id=version.dataset_id, dataset_version_id=version.id, kind="quality", producer=PRODUCER,
+                   value=quality_signals(SimpleNamespace(**item)), confidence="", evidence_ids=evidence_ids),
     ]
     session.add_all(entries)
     return entries
+
+
+def enrich_dataset(session, dataset: Dataset, *, dataset_version_id: int | None = None) -> list[Enrichment]:
+    version = session.get(DatasetVersion, dataset_version_id) if dataset_version_id else latest_version(session, dataset.id)
+    if version is None or version.dataset_id != dataset.id:
+        raise ValueError("数据集版本不存在或不属于该数据集")
+    return enrich_version(session, version)
 
 
 def enrich_all(engine: Engine, *, only_missing: bool = False) -> dict:
@@ -130,7 +149,7 @@ def enrich_all(engine: Engine, *, only_missing: bool = False) -> dict:
         for dataset in datasets:
             if only_missing:
                 has_schema = session.scalar(
-                    select(Enrichment.id).where(Enrichment.dataset_id == dataset.id, Enrichment.kind == "schema", Enrichment.status == "candidate")
+                    select(Enrichment.id).where(Enrichment.dataset_version_id == latest_version(session, dataset.id).id, Enrichment.kind == "schema", Enrichment.status == "candidate")
                 )
                 if has_schema is not None:
                     stats["skipped"] += 1

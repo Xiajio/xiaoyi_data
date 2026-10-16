@@ -29,7 +29,7 @@ class TestCollect:
         run = collect(engine, FakeAdapter(raws), CollectScope())
         assert run.status == "completed"
         assert {k: run.stats[k] for k in ("found", "new", "updated", "duplicates", "failed")} == {"found": 3, "new": 3, "updated": 0, "duplicates": 0, "failed": 0}
-        assert _counts(engine) == {"datasets": 3, "versions": 3, "evidence": 2}
+        assert _counts(engine) == {"datasets": 3, "versions": 3, "evidence": 5}
         with session_scope(engine) as session:
             ds1 = session.scalar(select(Dataset).where(Dataset.source_key == "a/ds1"))
             assert ds1.license_class == "permissive" and ds1.modalities == ["text"] and ds1.modality_source == "task-map"
@@ -43,7 +43,7 @@ class TestCollect:
         collect(engine, FakeAdapter(raws), CollectScope())
         second = collect(engine, FakeAdapter(raws), CollectScope())
         assert second.stats["duplicates"] == 2 and second.stats["new"] == 0
-        assert _counts(engine) == {"datasets": 2, "versions": 2, "evidence": 2}
+        assert _counts(engine) == {"datasets": 2, "versions": 2, "evidence": 4}
 
     def test_watermark_skips_unchanged_items(self, engine):
         raws = [make_raw("a/ds1", last_modified=day(3, 1)), make_raw("a/ds2", last_modified=day(3, 5))]

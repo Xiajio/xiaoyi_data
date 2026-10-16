@@ -1,79 +1,60 @@
-# 小亿数据 · 科研数据整理演示工具
+# 小亿数据 · 科研数据集平台
 
-独立的科研数据整理演示站，覆盖工作概览、数据接入、数据处理、核验工作台、对象资料库、数据集与发布、运行与审计七个页面。所有内容均为固定合成示例，适合合作沟通与宿主界面联调。
+面向内网科研小团队的数据集发现、整理、人工核验与科研输入交付系统。React 工作台调用 FastAPI，LangGraph worker 执行受限的发现与整理任务，下载和发布必须由人类账号批准。
 
-## 运行
+当前工作区实现 v0.5：版本证据固定、真实团队认证、科研任务、按范围批准下载、内容报告、研究包及 Python 加载入口。**本地验收完成情况与仍待联调的项目见 [实施验收](docs/research-platform.md)**。真实模型 API、PostgreSQL 容器及服务器试点需要部署配置后验收。
 
-需要 Node.js 22.13 或更高版本。
+## 启动
 
-```sh
+需要 Python 3.12+、Node.js 22.13+。从仓库根目录运行：
+
+```powershell
+python -m venv platform/.venv
+platform/.venv/Scripts/python -m pip install -e "./platform[dev]"
 npm ci
-npm run dev
+$env:XIAOYI_CATALOG_DB = "$PWD/data/catalog.db"
+platform/.venv/Scripts/python -m xiaoyi_catalog.auth --username admin --role admin
+platform/.venv/Scripts/python -m uvicorn xiaoyi_catalog.service:create_app --factory --host 127.0.0.1 --port 5280
 ```
 
-默认打开终端显示的地址。`host.html` 提供一个真实 iframe 宿主示例，可控制页面、案例定位、主题、会话、重置、关闭和重开。
+新终端运行 `npm run dev`，以刚创建的账号登录。API 和 worker 必须使用同一数据库、存储目录和模型环境配置；完整步骤见 [部署说明](docs/deployment.md)。
 
-```sh
-npm run typecheck
-npm test
-npm run build
-npx playwright install chromium
-npm run test:e2e
+```powershell
+$env:XIAOYI_CATALOG_DB = "$PWD/data/catalog.db"
+platform/.venv/Scripts/python -m xiaoyi_catalog.worker
 ```
 
-`npm run check` 按顺序执行类型检查、规则测试、构建与浏览器验收。
+首页 **工作概览** 展示真实目录规模、14/30 天入库趋势、模态与许可分布、整理核验状态，以及采集任务和同步计划。点击模态或许可可进入相应目录筛选；未知信息、未完成交付如实显示。
 
-## 策展模式（M3，对接目录服务）
+工作台 **HF 采集** 支持一键采集、每日同步、进度和失败原因查看，默认每次最多 50 条，完全不依赖 LLM；详见 [采集说明](docs/huggingface-collection.md)。未配置模型时，科研智能体任务会明确失败并保留原因；目录浏览、人工登记、核验和已批准资产交付仍可使用。Linux 将 `platform/.venv/Scripts/python` 换为 `platform/.venv/bin/python`。
 
-页面在 `?mode=catalog`（或构建期 `VITE_CATALOG_API`）下切换为策展工作台，数据来自 `platform/` 的目录服务而非本地演示状态：
+## 使用流程
 
-```sh
-# 终端 1：目录服务（默认读 ./data/catalog.db）
-cd platform && .venv/Scripts/python -m uvicorn xiaoyi_catalog.service:create_app --factory --port 5280
-# 终端 2：前端
-npm run dev    # 打开 http://127.0.0.1:5173/?mode=catalog
+1. 创建科研目标、硬约束和排序偏好。
+2. worker 从 Hugging Face 和人工登记目录发现候选，固定版本证据，生成待人工核验的建议。
+3. 对照证据核验候选，明确选择文件和体积上限，人工批准下载。
+4. 查看已获取文件的样本、测量报告和派生记录。
+5. 冻结并批准科研快照，导出目录 JSON 或带文件的研究包；在另一目录运行包内 `python load_data.py` 校验。
+
+数据源自报、模型推断、人工确认、实际测量分别保存。未知许可、模态或规模不会被视为满足硬约束。模型和 MCP 凭据不能批准下载或发布。
+
+## 工程与验收
+
+```powershell
+platform/.venv/Scripts/python -m pytest platform/tests -q
+npm run check
 ```
 
-策展模式含工作概览、数据目录（筛选/证据/整理候选）、整理核验（候选确认/驳回）、配对与发布（提案核验、冻结、审批、导出）、运行与审计五个页面。角色选择器仅决定可操作范围；核验与审批在服务端的 `review`/`audit` 表留痕。演示模式不受影响，两者共用同一构建。
+浏览器测试自动建立独立测试库。若 Windows 临时目录不可写，为 pytest 指定一个新的仓库内 `--basetemp output/pytest-<本次名称>`。PostgreSQL 集成测试仅在提供 `XIAOYI_TEST_POSTGRES` 时执行；CI 已配置 pgvector/PG16 服务。
 
-## 部署
+- [实现范围、架构与验收记录](docs/research-platform.md)
+- [本地与 Docker Compose 部署](docs/deployment.md)
+- [备份和恢复](docs/backup-recovery.md)
+- [后端 CLI、MCP 与版本恢复](platform/README.md)
+- [四类真实任务试点方案](docs/pilot-evaluation.md)
 
-`npm run build` 生成 `dist/`，整体部署到静态 HTTP(S) 服务。资源使用相对路径，可挂载到域名根目录或子目录。主工具入口为 `index.html`，示例宿主为 `host.html`。不要通过 `file://` 双击生产包；使用 `npm run preview` 或任意静态服务器。
+## 独立合成演示
 
-跨域宿主须在构建前配置 `VITE_DEMO_ALLOWED_ORIGINS`（逗号分隔的精确 HTTP(S) origin），然后重新构建。同源嵌入默认可用。部署响应的 CSP `frame-ancestors` 应按实际宿主域名配置，不要添加会禁止所需 iframe 的 `X-Frame-Options: DENY`。这些配置是页面部署约束，不是用户身份鉴权。
+`?mode=demo` 是原有七页面合成演示，`host.html` 是 iframe 宿主示例。其虚构研究对象、目录扫描、处理进度、浏览器角色和 localStorage 状态只用于演示，与真实策展库分别运行。
 
-```sh
-npm run build
-npm run preview -- --port 4173
-```
-
-接口和接入示例见 [宿主接入说明](docs/embedding.md)，完整体验路径见 [演示操作说明](docs/demo-guide.md)，验收结果见 [验收记录](docs/verification.md)。
-
-## 数据仪表台
-
-进入「工作概览」，默认展示研究对象与资料类型覆盖矩阵、按资料类型的处理状态堆叠图、资料记载日期分布和研究字段核验图。可按研究对象筛选，并点击图形查看具体资料、原文证据和核验记录。扫描入库、处理任务及人工核验都会同步更新图表；「处理与运行」保留原有全库处理统计和问题队列。
-
-仪表台统计实际已登记的合成资料，研究对象、资料项、字段分别计数。受限资料仍算存在，但单独标注限制；资料记载日期不等于数据采集或实验发生日期。当前样例不包含规模分布、质量结论等分析所需字段。图表口径见 [仪表台说明](docs/dashboard.md)。
-
-## 数据总览与目录扫描
-
-工作概览的「处理与运行」提供全库资料统计与按类型分布；已处理、待处理、处理中、失败、受限五种状态互斥，计数来自逐资料状态。预置的“已建档”不算处理完成，字段核验另行计数。点击状态数量可进入处理页对应列表。
-
-数据接入页提供服务器目录的**模拟扫描**：选择预置目录、包含子目录、立即扫描、停止、查看发现结果并确认加入资料库。开启自动扫描后，在页面保持打开时按 15／30／60 秒间隔执行，刷新、关闭或切换会话会中断未完成扫描并暂停自动扫描。再次使用时需手动启用，不会在浏览器关闭后运行。
-
-结果区分新资料、已存在文件、不支持格式和无读取权限。入库按固定合成资料 ID 去重，重复扫描或重复确认不会增加重复资料；新资料加入待处理队列，后续模拟任务只处理待处理／失败项。现有人工核验和已批准版本不会被扫描或任务覆盖。
-
-## 数据和边界
-
-- 初始 4 名虚构研究对象、12 项资料目录、6 项候选字段。模拟服务器目录扫描可再发现并确认加入 4 项合成资料；不支持上传或读取真实资料。
-- 报告证据与表格片段为预置合成内容。三维模型和图像集仅展示建档关系与占位，不包含解析器。
-- 运行进度、失败重试、角色与审批全部为演示逻辑；没有实际解析、模型服务或后端权限。
-- 状态保存在浏览器 localStorage，按会话隔离。可一键恢复初始数据，其他会话不受影响。清除站点数据会清除本机演示进度。
-- 已批准快照不随后续修改改变，JSON 导出来自所选快照并标注合成数据。它不是真实业务数据或审计凭证。
-- 运行时无需外部字体、CDN、分析服务或模型接口。部署站点自身提供全部静态资源。
-
-## 工程边界
-
-React + TypeScript + Vite。业务模型、种子数据、浏览器持久化、宿主协议和页面分别维护。代码不依赖小亿画板、文档服务或绘图 Agent Bridge；视觉参考小亿画板的朱砂红与浅深主题。首版交付静态应用和无框架宿主桥接脚本，不作为 React SDK 发布。
-
-原始交互参考来自用户提供的数据处理中台交互原型；业务与产品约定见 [PRODUCT.md](PRODUCT.md)。演进为通用数据集管理平台的方向见 [数据集平台设计](docs/dataset-platform-design.md)。
+生产构建默认进入真实策展模式；同源部署默认使用 `/api`。构建期 `VITE_CATALOG_API` 可指定另一个 API origin。静态演示的子路径部署与宿主集成保留，见 [宿主协议](docs/embedding.md)、[演示操作](docs/demo-guide.md) 和 [演示仪表台](docs/dashboard.md)。

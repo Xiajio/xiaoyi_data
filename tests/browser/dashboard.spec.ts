@@ -8,6 +8,7 @@ const storageKey='xiaoyi-data-demo:v1:standalone';
 const chartTitles=['多模态资料覆盖','资料处理分布','资料记载日期分布','研究字段核验'];
 async function saved(page:Page):Promise<DemoState>{return page.evaluate(key=>JSON.parse(localStorage.getItem(key)!),storageKey);}
 async function navigate(page:Page,label:string){
+  await expect(page.getByTestId('demo-app')).toBeVisible();
   const sidebar=page.locator('.sidebar');
   if(!await sidebar.isVisible())await page.getByLabel('切换导航').click();
   await sidebar.getByRole('button',{name:label,exact:true}).click();
@@ -44,7 +45,7 @@ async function screenshot(page:Page,name:string){
 }
 
 test('default research dashboard filters real seeded records and drills into coverage, dates and field evidence',async({page})=>{
-  const errors=watchErrors(page);await page.goto('/#/overview');
+  const errors=watchErrors(page);await page.goto('/?mode=demo#/overview');
   await expect(page.getByRole('heading',{name:'工作概览',exact:true})).toBeVisible();
   await expect(page.getByTestId('research-dashboard')).toBeVisible();
   await metrics(page,4,12,6);
@@ -78,7 +79,7 @@ test('scan import, inventory processing and manual review update dashboard witho
   let initial=createInitialState('standalone');initial=transition(initial,{type:'SET_ROLE',role:'manager'});initial=transition(initial,{type:'INTAKE'});
   await page.clock.install();await page.clock.pauseAt(new Date(Date.now()+60000));
   await page.addInitScript(({key,state})=>{if(!localStorage.getItem(key))localStorage.setItem(key,JSON.stringify(state));},{key:storageKey,state:initial});
-  await page.goto('/#/overview');await metrics(page,4,12,6);
+  await page.goto('/?mode=demo#/overview');await metrics(page,4,12,6);
   await navigate(page,'数据接入');await page.getByTestId('scan-directory').selectOption('inbox');await page.getByTestId('scan-recursive').check();
   await page.getByTestId('scan-start').click();await advanceUntil(page,async()=>(await saved(page)).scans[0]?.status==='completed');
   await page.getByTestId('scan-import').click();await expect.poll(async()=>(await saved(page)).assets.length).toBe(16);
@@ -104,7 +105,7 @@ test('scan import, inventory processing and manual review update dashboard witho
 
 for(const width of [520,1050,1600]){
   test(`dashboard charts, filtering and details are keyboard usable in light and dark at ${width}px`,async({page})=>{
-    const errors=watchErrors(page);await page.setViewportSize({width,height:1000});await page.goto('/#/overview');
+    const errors=watchErrors(page);await page.setViewportSize({width,height:1000});await page.goto('/?mode=demo#/overview');
     await expect(page.getByTestId('research-dashboard')).toBeVisible();await metrics(page,4,12,6);
     await noOverflow(page,width);await screenshot(page,`dashboard-${width}-light`);
     const coverage=page.getByTestId('coverage-P-DEMO-001-text');await coverage.focus();await coverage.press('Enter');

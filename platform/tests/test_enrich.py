@@ -86,7 +86,7 @@ class TestEnrichAll:
         with session_scope(engine) as session:
             entries = session.scalars(select(Enrichment)).all()
             assert len(entries) == 4  # 每集 schema + quality
-            assert all(entry.status == "candidate" and entry.producer == "enrich/0.1" for entry in entries)
+            assert all(entry.status == "candidate" and entry.producer == "enrich/0.2" for entry in entries)
             with_card = [entry for entry in entries if entry.evidence_ids]
             assert len(with_card) == 4  # 两个数据集都有卡片证据
             schema_entry = next(entry for entry in entries if entry.kind == "schema" and entry.value.get("present"))
@@ -94,6 +94,7 @@ class TestEnrichAll:
         again = enrich_all(engine)
         assert again["processed"] == 2
         with session_scope(engine) as session:
-            assert session.scalar(select(func.count(Enrichment.id))) == 4  # 重算不堆积
+            assert session.scalar(select(func.count(Enrichment.id)).where(Enrichment.status == "candidate")) == 4
+            assert session.scalar(select(func.count(Enrichment.id)).where(Enrichment.status == "superseded")) == 4  # 历史产物保留
         skipped = enrich_all(engine, only_missing=True)
         assert skipped == {"processed": 0, "skipped": 2}

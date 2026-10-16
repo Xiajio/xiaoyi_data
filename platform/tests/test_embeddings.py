@@ -51,14 +51,12 @@ class TestEmbedAll:
         _seed(engine)
         embedder = HashEmbedder()
         embed_all(engine, embedder)
-        with session_scope(engine) as session:
-            dataset = session.scalar(select(Dataset).where(Dataset.source_key == "a/qa"))
-            dataset.card_text = "彻底改写的内容 完全 不同"
+        collect(engine, FakeAdapter([make_raw("a/qa", revision="rev-2", card="彻底改写的内容 完全 不同")]), CollectScope())
         stats = embed_all(engine, embedder)
         assert stats == {"embedded": 1, "skipped": 2}
         with session_scope(engine) as session:
             rows = session.scalars(select(Enrichment).where(Enrichment.kind == "embedding")).all()
-            assert len(rows) == 3  # 重新生成是替换，不堆积
+            assert len(rows) == 4  # 历史版本向量保留，检索只使用最新版本
 
 
 class TestCosineTopK:

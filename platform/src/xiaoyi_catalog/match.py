@@ -21,45 +21,61 @@ def match_datasets(
     vector_k: int = 50,
 ) -> dict:
     """结构化过滤为硬条件；query_text + 嵌入器存在时在过滤结果内按余弦重排。"""
-    broad = search_datasets(session, SearchFilter(**{**filt.__dict__, "limit": 10_000, "offset": 0}))
+    broad = search_datasets(session, SearchFilter(**{**filt.__dict__, "limit": None, "offset": 0}))
     if not query_text.strip() or embedder is None:
-        ranked = sorted(broad, key=lambda item: item["downloads"], reverse=True)[: filt.limit]
+        ranked = sorted(broad, key=lambda item: item["downloads"], reverse=True)[filt.offset : filt.offset + filt.limit]
         return {"ranking": "downloads", "results": ranked}
-    scores = dict(cosine_top_k(session, embedder.embed([query_text])[0], vector_k, producer=embedder.model_name))
+    scores = dict(cosine_top_k(session, embedder.embed([query_text])[0], len(broad), producer=embedder.model_name, dataset_ids=[item["id"] for item in broad]))
     if not scores:
-        ranked = sorted(broad, key=lambda item: item["downloads"], reverse=True)[: filt.limit]
+        ranked = sorted(broad, key=lambda item: item["downloads"], reverse=True)[filt.offset : filt.offset + filt.limit]
         return {"ranking": "downloads", "note": "嵌入索引为空，未做语义排序", "results": ranked}
     for item in broad:
         item["similarity"] = round(scores.get(item["id"], 0.0), 4)
-    ranked = sorted(broad, key=lambda item: (item["similarity"], item["downloads"]), reverse=True)[: filt.limit]
+    ranked = sorted(broad, key=lambda item: (item["similarity"], item["downloads"]), reverse=True)[filt.offset : filt.offset + filt.limit]
     return {"ranking": "structured+cosine", "results": ranked}
 
 
 def requirement_to_filter(requirements: dict) -> SearchFilter:
     """把思路卡的 requirements 契约映射为结构化过滤；未知键忽略，保持向前兼容。"""
     return SearchFilter(
-        modalities=tuple(requirements.get("modalities") or ()),
-        task_categories=tuple(requirements.get("task_categories") or ()),
-        languages=tuple(requirements.get("languages") or ()),
-        license_classes=tuple(requirements.get("license_class") or ()),
+        modalities=tuple(_values(requirements.get("modalities"))),
+        task_categories=tuple(_values(requirements.get("task_categories"))),
+        languages=tuple(_values(requirements.get("languages"))),
+        license_classes=tuple(_values(requirements.get("license_classes") or requirements.get("license_class"))),
         min_rows=requirements.get("min_rows"),
+        max_rows=requirements.get("max_rows"),
+        min_bytes=requirements.get("min_bytes"),
+        max_bytes=requirements.get("max_bytes"),
         limit=int(requirements.get("limit") or 10),
     )
 
 
+def _values(value) -> list:
+    return [value] if isinstance(value, str) else list(value or [])
+
+
 def missing_for_requirement(item: dict, requirements: dict) -> list[str]:
-    """相对思路卡需求的缺口提示：硬约束不满足时明确列出，供提案与人工核验参考。"""
-    gaps: list[str] = []
-    wanted_modalities = set(requirements.get("modalities") or ())
-    if wanted_modalities and not wanted_modalities.intersection(item["modalities"]):
-        gaps.append(f"模态不匹配：需要 {'/'.join(sorted(wanted_modalities))}")
-    license_classes = set(requirements.get("license_class") or ())
-    if license_classes and item["license_class"] not in license_classes:
-        gaps.append(f"许可分级 {item['license_class']} 不在允许范围")
-    min_rows = requirements.get("min_rows")
-    if min_rows is not None:
-        if item["size_rows"] is None:
-            gaps.append("规模未知，无法确认满足最小行数")
-        elif item["size_rows"] < min_rows:
-            gaps.append(f"规模 {item['size_rows']} 行低于需求 {min_rows} 行")
+    """The same OR-within-field / AND-between-fields constraints used by search, including unknowns."""
+    gaps = []
+    for field, label in (("modalities", "模态"), ("task_categories", "任务"), ("languages", "语言")):
+        wanted = set(_values(requirements.get(field)))
+        if wanted and not wanted.intersection(item.get(field) or []):
+            gaps.append(f"{label}不匹配或未知：需要 {'/'.join(sorted(wanted))}")
+    allowed = set(_values(requirements.get("license_classes") or requirements.get("license_class")))
+    if allowed and (item.get("license_class") in (None, "unknown") or item.get("license_class") not in allowed):
+        gaps.append(f"许可分级 {item.get('license_class', 'unknown')} 不在允许范围")
+    for field, minimum in (("size_rows", requirements.get("min_rows")), ("size_bytes", requirements.get("min_bytes"))):
+        if minimum is not None:
+            actual = item.get(field)
+            if actual is None:
+                gaps.append("规模未知，无法确认满足最小行数" if field == "size_rows" else "字节规模未知")
+            elif actual < minimum:
+                gaps.append(f"规模 {actual} 低于需求 {minimum} ({field})")
+    for field, maximum in (("size_rows", requirements.get("max_rows")), ("size_bytes", requirements.get("max_bytes"))):
+        if maximum is not None:
+            actual = item.get(field)
+            if actual is None:
+                gaps.append(f"规模未知，无法确认满足上限 ({field})")
+            elif actual > maximum:
+                gaps.append(f"规模 {actual} 超过上限 {maximum} ({field})")
     return gaps

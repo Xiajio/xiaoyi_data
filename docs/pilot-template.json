@@ -1,0 +1,158 @@
+{
+  "schema_version": "1",
+  "status": "pending_model_configuration_and_human_labels",
+  "catalog": {
+    "target_entry_count": 200,
+    "entry_count": null,
+    "frozen_at": null,
+    "manifest_sha256": null
+  },
+  "model": {
+    "provider": null,
+    "model": null,
+    "prompt_version": null
+  },
+  "baseline_description": "在同一冻结目录版本上使用现有结构化过滤与检索；保持查询和硬约束一致。",
+  "annotation": {
+    "reviewer": null,
+    "reviewed_at": null,
+    "guideline_version": "pilot/1"
+  },
+  "tasks": [
+    {
+      "task_id": "text-news-classification",
+      "modality": "text",
+      "goal": "为中文新闻分类基准寻找有类别标注、固定版本和训练/测试划分说明的文本数据集。",
+      "hard_constraints": {
+        "modalities": [
+          "text"
+        ],
+        "languages": [
+          "zh"
+        ],
+        "license_class": [
+          "permissive"
+        ]
+      },
+      "preferences": {},
+      "relevance_complete": false,
+      "relevance_labels": [],
+      "methods": {
+        "baseline": {
+          "ranking": null,
+          "facts": []
+        },
+        "agent": {
+          "ranking": null,
+          "facts": []
+        }
+      },
+      "sample_bundle": {
+        "snapshot_id": null,
+        "path": null,
+        "sha256": null,
+        "authorization_reference": null,
+        "clean_environment_verified": false
+      }
+    },
+    {
+      "task_id": "table-supervised-baseline",
+      "modality": "table",
+      "goal": "为表格监督学习基准寻找有明确目标列、字段说明、缺失值信息和可复现划分方式的数据集。",
+      "hard_constraints": {
+        "modalities": [
+          "table"
+        ],
+        "license_class": [
+          "permissive"
+        ]
+      },
+      "preferences": {},
+      "relevance_complete": false,
+      "relevance_labels": [],
+      "methods": {
+        "baseline": {
+          "ranking": null,
+          "facts": []
+        },
+        "agent": {
+          "ranking": null,
+          "facts": []
+        }
+      },
+      "sample_bundle": {
+        "snapshot_id": null,
+        "path": null,
+        "sha256": null,
+        "authorization_reference": null,
+        "clean_environment_verified": false
+      }
+    },
+    {
+      "task_id": "image-classification-baseline",
+      "modality": "image",
+      "goal": "为图像分类基准寻找有类别定义、图像格式与尺寸说明、固定划分和明确许可的数据集。",
+      "hard_constraints": {
+        "modalities": [
+          "image"
+        ],
+        "license_class": [
+          "permissive"
+        ]
+      },
+      "preferences": {},
+      "relevance_complete": false,
+      "relevance_labels": [],
+      "methods": {
+        "baseline": {
+          "ranking": null,
+          "facts": []
+        },
+        "agent": {
+          "ranking": null,
+          "facts": []
+        }
+      },
+      "sample_bundle": {
+        "snapshot_id": null,
+        "path": null,
+        "sha256": null,
+        "authorization_reference": null,
+        "clean_environment_verified": false
+      }
+    },
+    {
+      "task_id": "mesh-object-baseline",
+      "modality": "3d",
+      "goal": "为三维对象分类研究寻找有类别映射、单位或坐标说明、固定版本及 OBJ/PLY/glTF 文件的可授权数据集。",
+      "hard_constraints": {
+        "modalities": [
+          "3d"
+        ],
+        "license_class": [
+          "permissive"
+        ]
+      },
+      "preferences": {},
+      "relevance_complete": false,
+      "relevance_labels": [],
+      "methods": {
+        "baseline": {
+          "ranking": null,
+          "facts": []
+        },
+        "agent": {
+          "ranking": null,
+          "facts": []
+        }
+      },
+      "sample_bundle": {
+        "snapshot_id": null,
+        "path": null,
+        "sha256": null,
+        "authorization_reference": null,
+        "clean_environment_verified": false
+      }
+    }
+  ]
+}

@@ -34,10 +34,12 @@ class FakeHfClient:
         self.list_kwargs = kwargs
         return iter(self._infos.values())
 
-    def dataset_info(self, key):
+    def dataset_info(self, key, revision=None):
+        self.detail_revision = revision
         return self._infos[key]
 
-    def hf_hub_download(self, repo_id, repo_type, filename):
+    def hf_hub_download(self, repo_id, repo_type, filename, revision=None):
+        self.card_revision = revision
         assert repo_type == "dataset" and filename == "README.md"
         if repo_id in self._card_errors:
             raise self._card_errors[repo_id]
@@ -80,10 +82,11 @@ class TestFetchDetail:
                         downloads=42, likes=7,
                         card_data={"license": ["mit"], "task_categories": ["question-answering"], "language": ["zh"],
                                    "dataset_info": {"splits": [{"num_examples": 10}, {"num_examples": 5}]}})
-        adapter, _ = make_adapter([info], cards={"org/ds": "# 卡片标题\n正文"}, tmp=tmp_path)
+        adapter, client = make_adapter([info], cards={"org/ds": "# 卡片标题\n正文"}, tmp=tmp_path)
         ref = next(iter(adapter.list(CollectScope())))
         raw = adapter.fetch_detail(ref)
         assert raw.ref.revision == "sha-9"
+        assert client.detail_revision == client.card_revision == "sha-9"
         assert raw.license == "mit"
         assert raw.task_categories == ("question-answering",)
         assert raw.languages == ("zh",)
@@ -107,7 +110,9 @@ class TestFetchDetail:
     def test_dataset_size_field_used_when_present(self, tmp_path):
         info = FakeInfo("org/sized", card_data={"dataset_info": {"dataset_size": 12345}})
         adapter, _ = make_adapter([info], card_errors={"org/sized": FileNotFoundError()}, tmp=tmp_path)
-        assert adapter.fetch_detail(next(iter(adapter.list(CollectScope())))).size_rows == 12345
+        raw = adapter.fetch_detail(next(iter(adapter.list(CollectScope()))))
+        assert raw.size_rows is None
+        assert raw.size_bytes == 12345
 
     def test_card_data_object_form_is_unpacked_via_to_dict(self, tmp_path):
         class CardDataObject:  # 仿 huggingface_hub.DatasetCardData：对象是映射但 dict() 会炸
@@ -121,3 +126,127 @@ class TestFetchDetail:
         adapter, _ = make_adapter([info], cards={"org/obj-card": "readme"}, tmp=tmp_path)
         raw = adapter.fetch_detail(next(iter(adapter.list(CollectScope()))))
         assert raw.license == "mit" and raw.task_categories == ("text-classification",)
+
+def test_explicit_recent_update_order_for_scheduled_collection(tmp_path):
+    client = FakeHfClient([FakeInfo("org/recent")], tmp=tmp_path)
+    adapter = HuggingFaceAdapter(client=client, sort="last_modified", detail_delay=0)
+    list(adapter.list(CollectScope(limit=50)))
+    assert client.list_kwargs["sort"] == "last_modified"
+    assert "direction" not in client.list_kwargs
+    assert client.list_kwargs["limit"] == 50
+
+
+def test_sorted_collection_matches_installed_hub_signature():
+    from unittest.mock import create_autospec
+    from huggingface_hub import HfApi
+    from inspect import signature
+    client = create_autospec(HfApi, instance=True)
+    client.list_datasets.return_value = [FakeInfo("org/recent")]
+    adapter = HuggingFaceAdapter(client=client, sort="last_modified", detail_delay=0)
+    assert len(list(adapter.list(CollectScope(limit=50)))) == 1
+    args = client.list_datasets.call_args.kwargs
+    assert args["sort"] == "last_modified"
+    assert ("direction" in args) == ("direction" in signature(HfApi.list_datasets).parameters)
+
+
+def test_sorted_collection_keeps_descending_order_for_legacy_hub():
+    class LegacyClient:
+        def list_datasets(self, *, sort, direction, limit, full):
+            assert sort == "last_modified" and direction == -1
+            assert limit == 50 and full is True
+            return [FakeInfo("org/legacy")]
+    adapter = HuggingFaceAdapter(client=LegacyClient(), sort="last_modified", detail_delay=0)
+    assert len(list(adapter.list(CollectScope(limit=50)))) == 1
+
+
+def test_installed_sdk_detail_timeout_and_minimal_expand(tmp_path):
+    from unittest.mock import create_autospec
+    from huggingface_hub import HfApi
+    from inspect import signature
+    from xiaoyi_catalog.adapters.base import DatasetRef
+    from xiaoyi_catalog.adapters.huggingface import DETAIL_FIELDS
+    client = create_autospec(HfApi, instance=True)
+    client.dataset_info.return_value = FakeInfo("org/pinned", sha="a" * 40)
+    card = tmp_path / "README.md"
+    card.write_text("card", encoding="utf-8")
+    client.hf_hub_download.return_value = str(card)
+    adapter = HuggingFaceAdapter(client=client, detail_delay=0)
+    adapter.fetch_detail(DatasetRef("org/pinned", "a" * 40))
+    kwargs = client.dataset_info.call_args.kwargs
+    assert kwargs["timeout"] == 30
+    if "expand" in signature(HfApi.dataset_info).parameters:
+        assert kwargs["expand"] == DETAIL_FIELDS and "siblings" not in kwargs["expand"]
+
+
+def test_real_sdk_http_requests_override_explicit_none_and_keep_hooks(monkeypatch):
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils import httpx
+    from huggingface_hub.utils import _http
+    import huggingface_hub.hf_api as api_module
+    from xiaoyi_catalog.adapters.base import DatasetRef
+    from xiaoyi_catalog.adapters import huggingface as adapter_module
+    seen, original_hooks = [], []
+    def transport(request):
+        seen.append(request)
+        data = {"id": "org/pinned", "sha": "a" * 40, "lastModified": "2026-10-16T00:00:00Z"}
+        return httpx.Response(200, json=[data] if request.url.path == "/api/datasets" else data)
+    monkeypatch.setattr(_http, "default_client_factory", lambda: httpx.Client(
+        transport=httpx.MockTransport(transport), follow_redirects=True, timeout=None,
+        event_hooks={"request": [lambda request: original_hooks.append(request)]}))
+    client = adapter_module._bounded_http_client()
+    monkeypatch.setattr(_http, "get_session", lambda: client)
+    monkeypatch.setattr(api_module, "get_session", lambda: client)
+    adapter = HuggingFaceAdapter(client=HfApi(endpoint="https://test.invalid"), detail_delay=0)
+    monkeypatch.setattr(adapter, "_load_card", lambda *args: "card")
+    try:
+        refs = list(adapter.list(CollectScope(limit=1)))
+        adapter.fetch_detail(refs[0])
+        # Pagination explicitly sends timeout=None; a client default alone fails this.
+        assert len(seen) == len(original_hooks) == 2
+        for request in seen:
+            assert all(value is not None and 0 < value <= 30 for value in request.extensions["timeout"].values())
+            assert "siblings" not in request.url.params.get_list("expand")
+        assert seen[0].url.params.get_list("expand") == ["sha", "lastModified"]
+        assert "full" not in seen[0].url.params
+        assert "/revision/" + "a" * 40 in seen[1].url.path
+    finally:
+        client.close()
+
+
+def test_request_budget_stops_sdk_retry_after_timeout(monkeypatch):
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils import httpx
+    from huggingface_hub.utils import _http
+    from xiaoyi_catalog.adapters import huggingface as adapter_module
+    elapsed = [0.0]
+    requests = []
+    def transport(request):
+        requests.append(request)
+        elapsed[0] = 31.0
+        raise httpx.ReadTimeout("must not leak token", request=request)
+    monkeypatch.setattr(_http, "default_client_factory", lambda: httpx.Client(transport=httpx.MockTransport(transport)))
+    client = adapter_module._bounded_http_client()
+    monkeypatch.setattr(_http, "get_session", lambda: client)
+    monkeypatch.setattr(adapter_module.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(_http.time, "sleep", lambda seconds: None)
+    adapter = HuggingFaceAdapter(client=HfApi(endpoint="https://test.invalid"), detail_delay=0)
+    try:
+        with pytest.raises(TimeoutError):
+            list(adapter.list(CollectScope(limit=1)))
+        assert len(requests) == 1
+    finally:
+        client.close()
+
+
+def test_shorter_timeouts_are_preserved_and_expired_budget_is_not_retried():
+    from huggingface_hub.utils import httpx
+    from xiaoyi_catalog.adapters import huggingface as module
+    request = httpx.Request("GET", "https://test.invalid", extensions={"timeout": {"connect": 2, "read": None, "write": 10, "pool": 60}})
+    module._bound_request_timeout(request)
+    assert request.extensions["timeout"] == {"connect": 2, "read": 30, "write": 10, "pool": 30}
+    token = module._CATALOG_DEADLINE.set(0)
+    try:
+        with pytest.raises(TimeoutError):
+            module._bound_request_timeout(request)
+    finally:
+        module._CATALOG_DEADLINE.reset(token)

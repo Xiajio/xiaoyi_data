@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -58,7 +58,7 @@ class Dataset(Timestamped, Base):
     modality_source: Mapped[str] = mapped_column(String(16), default="unknown")
     task_categories: Mapped[list] = mapped_column(JSON, default=list)
     languages: Mapped[list] = mapped_column(JSON, default=list)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, default=None)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, default=None)
     size_rows: Mapped[int | None] = mapped_column(Integer, default=None)
     downloads: Mapped[int] = mapped_column(Integer, default=0)
     likes: Mapped[int] = mapped_column(Integer, default=0)
@@ -80,6 +80,10 @@ class DatasetVersion(Timestamped, Base):
     dataset_id: Mapped[int] = mapped_column(ForeignKey("dataset.id"), index=True)
     revision: Mapped[str] = mapped_column(String(128), default="")
     changelog: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(16), default="source", index=True)
+    parent_version_id: Mapped[int | None] = mapped_column(ForeignKey("dataset_version.id"), nullable=True, default=None)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    provenance_status: Mapped[str] = mapped_column(String(32), default="legacy_unverified", index=True)
 
 
 class Evidence(Base):
@@ -89,9 +93,10 @@ class Evidence(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("dataset.id"), index=True)
+    dataset_version_id: Mapped[int | None] = mapped_column(ForeignKey("dataset_version.id"), index=True, default=None)
     kind: Mapped[str] = mapped_column(String(16))
     excerpt: Mapped[str] = mapped_column(Text, default="")
-    location: Mapped[str] = mapped_column(String(256), default="")
+    location: Mapped[str] = mapped_column(Text, default="")
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -123,6 +128,7 @@ class Enrichment(Timestamped, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("dataset.id"), index=True)
+    dataset_version_id: Mapped[int | None] = mapped_column(ForeignKey("dataset_version.id"), index=True, default=None)
     kind: Mapped[str] = mapped_column(String(16), index=True)
     producer: Mapped[str] = mapped_column(String(128), default="")
     value: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -201,3 +207,37 @@ class Audit(Base):
     action: Mapped[str] = mapped_column(String(64), index=True)
     detail: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class VectorEmbedding(Base):
+    """PostgreSQL vector mirror; SQLite retains the JSON representation for local tests."""
+    __tablename__ = "vector_embedding"
+    __table_args__ = (UniqueConstraint("enrichment_id", name="uq_vector_enrichment"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enrichment_id: Mapped[int] = mapped_column(ForeignKey("enrichment.id"), index=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("dataset.id"), index=True)
+    dataset_version_id: Mapped[int] = mapped_column(ForeignKey("dataset_version.id"), index=True)
+    producer: Mapped[str] = mapped_column(String(128), index=True)
+    dimension: Mapped[int] = mapped_column(Integer)
+    from pgvector.sqlalchemy import Vector
+    vector: Mapped[list] = mapped_column(JSON().with_variant(Vector(), "postgresql"))
+
+
+from sqlalchemy import event, inspect
+from sqlalchemy.orm import object_session
+
+
+@event.listens_for(DatasetVersion, "before_update")
+def _immutable_version(_mapper, _connection, target):
+    state = inspect(target)
+    protected = ("dataset_id", "revision", "metadata_json", "provenance_status", "kind", "parent_version_id")
+    changed = {field for field in protected if state.attrs[field].history.has_changes()}
+    session = object_session(target)
+    if changed and session and session.info.get("recover_legacy_version") == target.id:
+        old_status = state.attrs.provenance_status.history.deleted
+        old_metadata = state.attrs.metadata_json.history.deleted
+        if (changed <= {"metadata_json", "provenance_status"} and list(old_status) == ["legacy_unverified"]
+                and list(old_metadata) == [{}] and target.provenance_status == "verified" and target.metadata_json):
+            return
+    if changed:
+        raise ValueError("Captured dataset versions are immutable; collect a new revision")

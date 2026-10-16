@@ -19,7 +19,7 @@ async function saved(page:Page){return page.evaluate(k=>JSON.parse(localStorage.
 
 test('complete intake, simulated execution, evidence review, frozen version and export',async({page})=>{
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
-  await page.goto('/');
+  await page.goto('/?mode=demo');
   await page.getByLabel('演示角色').selectOption('manager');
   await navigate(page,'数据接入');
   await page.getByRole('button',{name:'接入演示批次',exact:true}).click();
@@ -72,7 +72,7 @@ test('failed task retries and refresh interrupts work without overwriting review
   let state=createInitialState('standalone');state=transition(state,{type:'REVIEW',fieldId:'R-01',decision:'confirm'});
   state=transition(state,{type:'SET_ROLE',role:'manager'});state=transition(state,{type:'INTAKE'});
   await page.addInitScript(({key,state})=>{if(!localStorage.getItem(key))localStorage.setItem(key,JSON.stringify(state));},{key,state});
-  await page.goto('/');await page.getByRole('button',{name:/创建处理任务/}).click();
+  await page.goto('/?mode=demo');await page.getByRole('button',{name:/创建处理任务/}).click();
   await page.getByLabel('模拟一次整理失败，演示重试').check();
   await page.getByRole('button',{name:'确认计划并执行',exact:true}).click();
   await expect.poll(async()=>(await saved(page)).runs[0]?.status).toBe('failed');
@@ -89,7 +89,7 @@ test('failed task retries and refresh interrupts work without overwriting review
 
 test('corrupt cache stays untouched until explicit reset',async({page})=>{
   await page.addInitScript(k=>localStorage.setItem(k,'{broken'),key);
-  await page.goto('/');await expect(page.getByRole('alert')).toContainText('已损坏');
+  await page.goto('/?mode=demo');await expect(page.getByRole('alert')).toContainText('已损坏');
   await page.getByLabel('演示角色').selectOption('manager');
   expect(await page.evaluate(k=>localStorage.getItem(k),key)).toBe('{broken');
   await page.getByRole('button',{name:'重置此演示会话'}).click();
@@ -100,7 +100,7 @@ test('corrupt cache stays untouched until explicit reset',async({page})=>{
 
 test('unavailable browser storage runs in memory with a clear notice',async({page})=>{
   await page.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw new DOMException('Storage denied','SecurityError');}}));
-  await page.goto('/');await expect(page.getByRole('alert')).toContainText('存储不可用');
+  await page.goto('/?mode=demo');await expect(page.getByRole('alert')).toContainText('存储不可用');
   await navigate(page,'核验工作台');await review(page,'R-01','confirm');
   await page.getByRole('button',{name:'重置演示',exact:true}).click();await page.getByRole('button',{name:'确认重置'}).click();
   await expect(page.getByRole('heading',{name:'数据处理',exact:true})).toBeVisible();
@@ -108,7 +108,7 @@ test('unavailable browser storage runs in memory with a clear notice',async({pag
 
 for(const viewport of [{width:1600,height:1000},{width:1050,height:900},{width:520,height:900}]){
  test(`seven pages and keyboard review at ${viewport.width}px`,async({page})=>{
-  await page.setViewportSize(viewport);await page.goto('/');
+  await page.setViewportSize(viewport);await page.goto('/?mode=demo');await expect(page.getByTestId('demo-app')).toBeVisible();
   const requests:string[]=[];page.on('request',request=>{if(!request.url().startsWith('http://127.0.0.1:4173'))requests.push(request.url());});
   for(const label of ['工作概览','数据接入','数据处理','核验工作台','对象资料库','数据集与发布','运行与审计']){
     if(!await page.locator('.sidebar').isVisible())await page.getByLabel('切换导航').click();
@@ -137,7 +137,7 @@ for(const viewport of [{width:1600,height:1000},{width:1050,height:900},{width:5
 
 
 test('conflicting source tables remain discoverable in issue filters and locate their evidence',async({page})=>{
-  await page.goto('/');
+  await page.goto('/?mode=demo');
   await page.getByLabel('资料类型').selectOption('table');
   await page.getByRole('button',{name:'仅看问题',exact:true}).click();
   await page.getByRole('button',{name:'数据登记表_001.csv',exact:true}).click();

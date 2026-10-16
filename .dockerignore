@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.env*
+platform/.venv
+platform/data
+platform/*.log
+output
+test-results
+playwright-report
+__pycache__
+
+.playwright-cli/
+platform/build/
+/data/

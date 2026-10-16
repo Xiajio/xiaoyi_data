@@ -70,6 +70,6 @@ class TestStats:
     def test_catalog_stats(self, seeded):
         with session_scope(seeded) as session:
             stats = catalog_stats(session)
-            assert stats["datasets"] == 4 and stats["runs"] == 1 and stats["evidence"] == 3
+            assert stats["datasets"] == 4 and stats["runs"] == 1 and stats["evidence"] == 7
             assert stats["by_license_class"] == {"permissive": 1, "copyleft": 1, "research-only": 1, "unknown": 1}
             assert stats["by_modality"] == {"3d": 1, "image": 1, "text": 2}
