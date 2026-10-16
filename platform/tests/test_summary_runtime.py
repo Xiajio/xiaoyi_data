@@ -12,9 +12,9 @@ from xiaoyi_catalog.worker import run_once
 
 
 class FakeModel:
-    def __init__(self, *, forged=False, fail=False):
+    def __init__(self, *, forged=False, fail=False, mixed=False):
         self.calls = 0
-        self.forged, self.fail = forged, fail
+        self.forged, self.fail, self.mixed = forged, fail, mixed
         self.inputs = []
 
     def complete(self, schema, instruction, data):
@@ -24,10 +24,17 @@ class FakeModel:
             self.fail = False
             raise TimeoutError("provider timeout with secret key")
         excerpt = data["evidence"][0]["excerpt"] if data["evidence"] else ""
+        claims = []
+        if data["evidence"]:
+            if not self.forged:
+                claims.append({"text": "卡片说明数据集包含 100 行样本。",
+                               "evidence_ids": [data["evidence"][0]["id"]], "quotes": [excerpt[:40]]})
+            if self.forged or self.mixed:
+                claims.append({"text": "编造一条无法核验的陈述。",
+                               "evidence_ids": [999 if self.forged else data["evidence"][0]["id"]],
+                               "quotes": ["原文中不存在的引文"]})
         body = {"rationale": "该数据集为新闻文本分类语料，许可宽松，证据来自留存卡片。",
-                "claims": [{"text": "卡片说明数据集包含 100 行样本。",
-                            "evidence_ids": [999 if self.forged else data["evidence"][0]["id"]],
-                            "quotes": [excerpt[:40]]}] if data["evidence"] else [],
+                "claims": claims,
                 "uncertainty": ["元数据与卡片摘录不代表已下载完整数据文件。"]}
         return ModelResponse(schema.model_validate(body), "fake-summary",
                              {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
@@ -108,11 +115,22 @@ def test_forged_citation_fails_after_bounded_attempts(engine):
     assert read(engine, ident).status == "generating"
     assert process_next_summary(engine, llm=model)
     row = read(engine, ident)
-    assert row.status == "failed" and "未提供的证据编号" in row.value["error"]
+    assert row.status == "failed" and "未通过原文核验" in row.value["error"]
     assert row.value["attempts"] == 3
     # 失败后再次提交重置为生成中（重试语义）
     assert submit(engine, dataset, version)["status"] == "generating"
     assert read(engine, ident).value["attempts"] == 0
+
+
+def test_unverifiable_claims_are_demoted_but_grounded_ones_publish(engine):
+    dataset, version, evidence = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+    assert process_next_summary(engine, llm=FakeModel(mixed=True))
+    row = read(engine, ident)
+    assert row.status == "candidate"
+    assert row.evidence_ids == [evidence]
+    assert len(row.value["claims"]) == 1 and row.value["demoted_claims"] == 1
+    assert any("引用未通过原文核验" in item and "编造一条无法核验的陈述" in item for item in row.value["uncertainty"])
 
 
 def test_worker_run_once_processes_summary(engine):

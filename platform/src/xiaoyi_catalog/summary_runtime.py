@@ -31,7 +31,8 @@ INSTRUCTION = (
     "3) 列出风险与需要人工核对的事项。规则：每条事实性 claim 必须给出 evidence_ids（仅限供给的证据编号）"
     "与 quotes（所引证据摘录中的逐字原文）。quotes 的每一项必须是对应证据 excerpt 字段里一段连续、未改写的"
     "子串，不得用逗号把多个不相邻的片段拼接成一项，也不得添加省略号或外层引号；引用多个片段时拆成多个 "
-    "quotes 逐项列出。推断、无法证实或证据不足的内容写入 uncertainty；没有证据支撑时不要编造事实；"
+    "quotes 逐项列出；引文必须保留原文中的全部标记符号（如 Markdown 链接、代码标记），不得清理或改写。"
+    "推断、无法证实或证据不足的内容写入 uncertainty；没有证据支撑时不要编造事实；"
     "claims 与 uncertainty 不能同时为空；用中文回答。")
 
 
@@ -110,18 +111,27 @@ def _bounded_inputs(session, row: Enrichment):
     return json.loads(json.dumps(_safe(data), ensure_ascii=False, default=str))
 
 
-def _ground(summary: DatasetSummary, evidence: list[dict]) -> list[int]:
+def _ground(summary: DatasetSummary, evidence: list[dict]) -> tuple[list[EvidenceClaim], list[str], list[int]]:
+    """逐 claim 核验：引文全部为所引证据连续子串才保留为 claim；未通过的降级进
+    uncertainty（标注需人工核对），不拖垮整条总结。模型给出过 claim 但一条都
+    未能落地时判失败，交由重试。"""
     supplied = {item["id"]: item["excerpt"] for item in evidence}
+    grounded: list[EvidenceClaim] = []
+    demoted: list[str] = []
     for claim in summary.claims:
-        for evidence_id in claim.evidence_ids:
-            if evidence_id not in supplied:
-                raise ModelOutputError("模型引用了未提供的证据编号")
-        for quote in claim.quotes:
-            if not any(quote in supplied[evidence_id] for evidence_id in claim.evidence_ids):
-                raise ModelOutputError("模型引用未通过原文核验")
-    if not summary.claims and not summary.uncertainty:
+        ids_ok = all(evidence_id in supplied for evidence_id in claim.evidence_ids)
+        quotes_ok = ids_ok and all(
+            any(quote in supplied[evidence_id] for evidence_id in claim.evidence_ids)
+            for quote in claim.quotes)
+        (grounded if ids_ok and quotes_ok else demoted).append(claim if ids_ok and quotes_ok else claim.text)
+    uncertainty = list(summary.uncertainty) + [
+        f"（引用未通过原文核验，需人工核对）{text}"[:1000] for text in demoted]
+    if summary.claims and not grounded:
+        raise ModelOutputError("模型引用全部未通过原文核验")
+    if not grounded and not uncertainty:
         raise ModelOutputError("模型输出缺少有依据的内容或不确定性说明")
-    return sorted({evidence_id for claim in summary.claims for evidence_id in claim.evidence_ids})
+    cited = sorted({evidence_id for claim in grounded for evidence_id in claim.evidence_ids})
+    return grounded, uncertainty[:8], cited
 
 
 def _error_text(exc: Exception) -> str:
@@ -150,7 +160,7 @@ def execute_summary(engine, enrichment_id: int, *, llm=None, guard=lambda: None)
         response = llm.complete(DatasetSummary, INSTRUCTION, data)
         guard()
         summary = DatasetSummary.model_validate(response.value.model_dump())
-        cited = _ground(summary, data["evidence"])
+        grounded, uncertainty, cited = _ground(summary, data["evidence"])
     except Exception as exc:
         guard()
         with session_scope(engine) as session:
@@ -173,11 +183,13 @@ def execute_summary(engine, enrichment_id: int, *, llm=None, guard=lambda: None)
         row.status = "candidate"
         row.evidence_ids = cited
         row.value = {"summary_kind": "dataset_review", "rationale": summary.rationale,
-                     "claims": [claim.model_dump() for claim in summary.claims],
-                     "uncertainty": summary.uncertainty, "model": str(response.model)[:256],
-                     "usage": response.usage, "prompt_version": PROMPT_VERSION, "attempts": attempts}
+                     "claims": [claim.model_dump() for claim in grounded],
+                     "uncertainty": uncertainty, "model": str(response.model)[:256],
+                     "usage": response.usage, "prompt_version": PROMPT_VERSION, "attempts": attempts,
+                     "demoted_claims": len(summary.claims) - len(grounded)}
+        demoted_note = f"，{len(summary.claims) - len(grounded)} 条引用未通过核验已降级" if len(summary.claims) > len(grounded) else ""
         session.add(Audit(actor="agent", action="agent_summary_completed",
-                          detail=f"整理候选 #{row.id} 智能体总结已生成，待人工核验（引用证据 {len(cited)} 条）"))
+                          detail=f"整理候选 #{row.id} 智能体总结已生成，待人工核验（引用证据 {len(cited)} 条{demoted_note}）"))
 
 
 def process_next_summary(engine, *, llm=None, guard=lambda: None) -> bool:
