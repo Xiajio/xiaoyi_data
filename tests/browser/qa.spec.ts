@@ -31,7 +31,7 @@ async function fixture(page: Page) {
   });
   return { calls, capabilities, conversations, state, makeTurn, complete };
 }
-async function go(page: Page) { await page.goto('/'); if (page.viewportSize()!.width < 700) await page.getByRole('button', { name: '切换导航' }).click(); await page.getByRole('navigation', { name: '科研工作区' }).getByRole('button', { name: '数据问答', exact: true }).click(); await expect(page.getByRole('heading', { name: '数据问答', exact: true })).toBeVisible(); }
+async function go(page: Page) { await page.goto('/'); await page.getByRole('button', { name: '数据问答', exact: true }).click(); await expect(page.getByRole('heading', { name: '数据问答', exact: true })).toBeVisible(); }
 
 test('reader asks multiple turns, sees actual status and quoted evidence, and historical conversations persist', async ({ page }, testInfo) => {
   const data = await fixture(page); await go(page); await page.getByRole('button', { name: '目前收集了多少数据集？' }).click(); await page.getByRole('button', { name: '发送问题', exact: true }).click();
