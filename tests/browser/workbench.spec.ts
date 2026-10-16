@@ -67,7 +67,19 @@ test('version evidence stays isolated and download approval keeps the selected f
 });
 
 test('review displays source evidence and records a correction note', async ({ page }) => {
-  const calls = await mockWorkbench(page); await page.goto('/'); await nav(page, '整理核验'); await expect(page.getByTestId('enrichment-3')).toContainText('中文新闻语料，MIT 许可'); await page.getByRole('button', { name: '更正候选', exact: true }).click(); await page.getByLabel('更正候选内容').fill('{"level":"partial","reasons":["缺少切分说明"]}'); await page.getByLabel('核验说明').fill('来源没有说明训练与测试切分'); await page.getByRole('button', { name: '保存更正' }).click(); await expect(page.getByRole('status')).toContainText('已更正');
+  const calls = await mockWorkbench(page); await page.goto('/'); await nav(page, '整理核验');
+  const card = page.getByTestId('enrichment-3');
+  await expect(card).toContainText('中文新闻语料，MIT 许可');
+  await expect(page.getByTestId('review-facts')).toContainText('宽松许可');
+  await expect(page.getByTestId('review-facts')).toContainText('100 行');
+  await expect(page.getByTestId('review-level')).toHaveText('完整');
+  await expect(card.locator('#evidence-101 mark').first()).toBeVisible();
+  await page.getByRole('button', { name: '更正候选', exact: true }).click();
+  await page.getByLabel('更正候选内容').fill('{"level":"partial","reasons":["缺少切分说明"]}');
+  await expect(page.getByText('✓ 有效 JSON · 2 个键')).toBeVisible();
+  await expect(card.getByTestId('review-level')).toHaveText('部分');
+  await page.getByLabel('核验说明').fill('来源没有说明训练与测试切分');
+  await page.getByRole('button', { name: '保存更正' }).click(); await expect(page.getByRole('status')).toContainText('已更正');
   expect(calls.find(call => call.path === '/api/review/enrichments/3')?.body).toEqual({ decision: 'corrected', note: '来源没有说明训练与测试切分', value: { level: 'partial', reasons: ['缺少切分说明'] } });
 });
 
