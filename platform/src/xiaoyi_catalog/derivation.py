@@ -18,7 +18,7 @@ from .models_samples import ProfileRun,MetricObservation
 from .pairing import _approved_asset
 from .profiling import profile_file
 from .sample_engine import (asset_path,source_record,validate_inputs,workspace,store_file,
-                            checkpoint,cached_operation,remember_operation)
+                            checkpoint,cached_operation,remember_operation,progress)
 
 
 def _capture(session,parent_asset_id,operation,*,lock=False):
@@ -82,6 +82,7 @@ def _compute(state,guard=None):
         index.execute("CREATE TABLE seen (digest BLOB PRIMARY KEY) WITHOUT ROWID")
         output=directory/("deduplicated"+state["suffix"])
         input_rows=output_rows=0
+        progress(guard, "deduplicating", 0, output_rows=0, removed_rows=0)
         with source.open(encoding="utf-8",newline="") as inp,output.open("w",encoding="utf-8",newline="") as out:
             if state["suffix"] in {".csv",".tsv"}:
                 delimiter="\t" if state["suffix"]==".tsv" else ","
@@ -108,10 +109,13 @@ def _compute(state,guard=None):
                     output_rows+=1
                 if input_rows%500==0:
                     index.commit();checkpoint(guard)
+                    progress(guard, "deduplicating", input_rows, output_rows=output_rows, removed_rows=input_rows-output_rows)
         index.commit()
+        progress(guard, "deduplicating", input_rows, output_rows=output_rows, removed_rows=input_rows-output_rows)
         # Detect mutation during streaming, before any publication transaction begins.
         if _hash(source,guard)!=state["parent"]["sha256"]:
             raise DownloadError("派生输入在处理期间改变")
+        progress(guard, "profiling_output", 0, output_rows=output_rows, input_rows=input_rows)
         report=profile_file(output,state["parent"]["path"])
         report["derivation"]={"input_rows":input_rows,"output_rows":output_rows,"removed_rows":input_rows-output_rows}
         checkpoint(guard)
@@ -178,4 +182,5 @@ def execute_derive(engine,parent_asset_id,operation="deduplicate",guard=None,act
         asset=_publish(session,state,computed,actor or "derived-worker")
         result=asset_to_dict(asset)
         remember_operation(session,guard,result)
-        return result
+    progress(guard, "completed", computed["input_rows"], computed["input_rows"], output_rows=computed["output_rows"], removed_rows=computed["input_rows"]-computed["output_rows"])
+    return result

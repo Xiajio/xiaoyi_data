@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 import hashlib
 import json
+import re
 import threading
 import uuid
 from contextlib import contextmanager
@@ -152,6 +153,7 @@ def claim(engine, queue, owner):
             job.attempts += 1
             job.owner, job.fence, job.status = owner, uuid.uuid4().hex, "running"
             job.lease_until = now + timedelta(seconds=LEASE_SECONDS)
+            job.progress = {"stage": "starting", "processed": 0, "total": None, "counts": {}}
             session.add(Attempt(job_id=job.id, number=job.attempts, owner=owner, fence=job.fence))
             event(session, job, "started", {"attempt":job.attempts})
         return job
@@ -159,12 +161,15 @@ def claim(engine, queue, owner):
 class Guard:
     def __init__(self, engine, job):
         self.engine, self.ident, self.owner, self.fence = engine, job.id, job.owner, job.fence
-        self.stop, self.lost = threading.Event(), threading.Event()
+        self.stop, self.lost, self.cancelled = threading.Event(), threading.Event(), threading.Event()
+        self._progress_lock, self._progress = threading.Lock(), None
         self.thread = threading.Thread(target=self._heartbeat, name="job-lease-heartbeat", daemon=True)
 
     def __call__(self, session=None, *, allow_cancel=False):
         if self.lost.is_set():
             raise LeaseLost("任务执行租约已失效")
+        if self.cancelled.is_set() and not allow_cancel:
+            raise JobCancelled("任务已请求取消")
         if session is None:
             with Session(self.engine) as check:
                 return self._check(check, lock=False, allow_cancel=allow_cancel)
@@ -185,16 +190,61 @@ class Guard:
             raise JobCancelled("任务已请求取消")
         return job
 
+    def report_progress(self, stage, processed, total=None, **smallcounts):
+        """Buffer <=2 KiB of numeric progress; never opens a SQL transaction.
+
+        Stage is 1-64 ASCII identifier characters. Counts are non-negative signed
+        64-bit integers (at most 16 named counts); totals are omitted when unknown.
+        The normal heartbeat persists this snapshot using the owner's fence.
+        """
+        if self.lost.is_set():
+            raise LeaseLost("任务执行租约已失效")
+        if self.cancelled.is_set():
+            raise JobCancelled("任务已请求取消")
+        if not isinstance(stage, str) or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", stage) is None:
+            raise JobError("进度阶段必须是1至64位ASCII标识")
+        def valid_count(value):
+            return type(value) is int and 0 <= value <= 2**63 - 1
+        if not valid_count(processed) or (total is not None and (not valid_count(total) or total < processed)):
+            raise JobError("进度计数必须非负且不能超过已知总数")
+        if len(smallcounts) > 16 or any(re.fullmatch(r"[a-z][a-z0-9_]{0,47}", key) is None or not valid_count(value)
+                                      for key, value in smallcounts.items()):
+            raise JobError("进度最多接受16个有界整数计数")
+        value = {"stage": stage, "processed": processed, "total": total, "counts": dict(smallcounts)}
+        if len(json.dumps(value, separators=(",", ":")).encode()) > 2048:
+            raise JobError("进度内容超过2 KiB")
+        with self._progress_lock:
+            self._progress = value
+
+    def progress_snapshot(self):
+        with self._progress_lock:
+            return {**self._progress, "counts": dict(self._progress["counts"])} if self._progress else None
+
+    def _renew_lease(self):
+        if self.lost.is_set() or self.cancelled.is_set():
+            return False
+        values = {"lease_until": utcnow() + timedelta(seconds=LEASE_SECONDS)}
+        progress = self.progress_snapshot()
+        if progress is not None:
+            values["progress"] = progress
+        with Session(self.engine) as session, session.begin():
+            result = session.execute(update(Job).where(Job.id == self.ident, Job.status == "running",
+                Job.owner == self.owner, Job.fence == self.fence, Job.lease_until > utcnow(),
+                Job.cancel_requested.is_(False)).values(**values))
+            if result.rowcount:
+                return True
+            owner = session.execute(select(Job.owner, Job.fence, Job.cancel_requested).where(Job.id == self.ident)).first()
+            if owner and owner.owner == self.owner and owner.fence == self.fence and owner.cancel_requested:
+                self.cancelled.set()
+            else:
+                self.lost.set()
+            return False
+
     def _heartbeat(self):
         while not self.stop.wait(15):
             try:
-                with Session(self.engine) as session, session.begin():
-                    result = session.execute(update(Job).where(Job.id==self.ident, Job.status=="running",
-                        Job.owner==self.owner, Job.fence==self.fence, Job.lease_until>utcnow()).values(
-                            lease_until=utcnow()+timedelta(seconds=LEASE_SECONDS)))
-                    if not result.rowcount:
-                        self.lost.set()
-                        return
+                if not self._renew_lease():
+                    return
             except Exception:
                 self.lost.set()
                 return
@@ -275,6 +325,9 @@ def finish(engine, guard, status, result=None, error=""):
                 status, result, error = "failed", {}, "任务产物回执校验失败"
         elif job.cancel_requested:
             status, error = "cancelled", "任务已取消"
+        progress = guard.progress_snapshot()
+        if progress is not None and not job.cancel_requested and status != "cancelled":
+            job.progress = progress
         now = utcnow()
         job.status, job.result, job.error = status, result or {}, error[:2000]
         job.finished_at = None if status == "queued" else now

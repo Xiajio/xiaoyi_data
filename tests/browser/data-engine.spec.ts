@@ -54,8 +54,8 @@ test('builds require publication before asynchronous export and expose pending c
   await row.getByRole('button', { name: '批准发布' }).click(); expect(data.calls.at(-1)?.body).toEqual({ manifest_hash: 'a'.repeat(64) });
   await row.getByRole('button', { name: '导出训练包' }).click();
   const task = page.getByTestId('background-job-2'); await expect(task).toContainText('训练包导出');
-  Object.assign(data.jobs[0], { status: 'running' });
-  await task.getByRole('button', { name: '取消', exact: true }).click(); await expect(task.getByRole('button', { name: '取消中…' })).toBeDisabled();
+  Object.assign(data.jobs[0], { status: 'running', progress: { stage: 'copying_objects', processed: 1, total: 2, counts: { bytes_copied: 100 } } });
+  await task.getByRole('button', { name: '取消', exact: true }).click(); await expect(task.getByRole('button', { name: '取消中…' })).toBeDisabled(); await expect(task).toContainText('打包文件：1 / 2');
   Object.assign(data.jobs[0], { status: 'succeeded', result: { build_id: 1 } });
   await expect(task.getByRole('button', { name: '下载训练包' })).toBeVisible({ timeout: 7000 });
   const download = page.waitForEvent('download'); await task.getByRole('button', { name: '下载训练包' }).click(); expect((await download).suggestedFilename()).toBe('dataset-build-1.zip');

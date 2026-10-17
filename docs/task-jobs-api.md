@@ -49,7 +49,7 @@
 | 重新执行失败/取消任务 | POST /api/jobs/{job_id}/retry |
 | 下载完成的训练包 | GET /api/jobs/{job_id}/artifact |
 
-状态为 queued、running、succeeded、failed、cancelled。运行中取消先记录 cancel_requested，等待安全检查点；已经原子提交的产物不会因晚到取消而撤销。进度字段按操作提供，历史业务阶段仍可从原入口读取，不将未报告的百分比推算为真实进度。
+状态为 queued、running、succeeded、failed、cancelled。运行中取消先记录 cancel_requested，等待安全检查点；已经原子提交的产物不会因晚到取消而撤销。进度字段按操作提供真实 stage、processed、可选 total 与少量整数 counts，最多2KiB；采样、选择、分片、派生及导出通过既有15秒租约心跳批量写入，最终保存最后快照。旧所有者和取消后的执行不能更新进度。工作台显示阶段与实际计数，不推算未测量的百分比；历史业务阶段仍可从原入口读取。
 
 幂等键按账号隔离；同键不同参数拒绝。构建和实验默认按规范参数复用任务；需要独立复现时显式提供新 Idempotency-Key。任务失败后显式重试增加 Attempt、保留事件与原输入；旧科研/问答/下载等业务重试仍走原入口，保留业务权限与审批逻辑。
 

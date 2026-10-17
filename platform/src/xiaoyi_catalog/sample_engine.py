@@ -35,6 +35,12 @@ def checkpoint(guard, session=None):
     if guard:
         guard(session) if session is not None else guard()
 
+def progress(guard, stage, processed, total=None, **counts):
+    reporter = getattr(guard, "report_progress", None)
+    if reporter is not None:
+        reporter(stage, processed, total, **counts)
+
+
 def cached_operation(session, guard):
     """Publication receipt survives a crash before the worker updates Job.status."""
     job_id=getattr(guard,"ident",None)
@@ -281,6 +287,7 @@ def _execute_build(engine, build_id, recipe, inputs, guard):
         connection.execute("CREATE TABLE rows (id TEXT PRIMARY KEY, dedup TEXT, rank TEXT, payload TEXT)")
         connection.execute("CREATE INDEX dedup_idx ON rows(dedup)")
         counts = Counter()
+        progress(guard, "reading_rows", 0)
         error_path = directory / "excluded.jsonl"
         image_assets = {(a["dataset_version_id"], a["path"]): a for a in inputs}
         for asset in inputs:
@@ -302,6 +309,7 @@ def _execute_build(engine, build_id, recipe, inputs, guard):
                     if counts["input_rows"] % 500 == 0:
                         connection.commit()
                         checkpoint(guard)
+                        progress(guard, "reading_rows", counts["input_rows"], invalid_rows=counts["invalid_rows"], exact_duplicates=counts["exact_duplicates"])
                     try:
                         if error:
                             raise ValueError(error)
@@ -320,23 +328,35 @@ def _execute_build(engine, build_id, recipe, inputs, guard):
                         counts["invalid_rows"] += 1
                         errors.write(canonical({"asset_id": asset["asset_id"], "position": position, "reason": reason}) + "\n")
         connection.commit()
+        progress(guard, "reading_rows", counts["input_rows"], invalid_rows=counts["invalid_rows"], exact_duplicates=counts["exact_duplicates"])
         retained = connection.execute("SELECT count(*) FROM rows").fetchone()[0]
         if not retained:
             connection.close()
             raise ValueError("build contains no valid samples")
         counts["before_selection"] = retained
+        progress(guard, "selecting_rows", 0, retained)
         if recipe.sample_budget and retained > recipe.sample_budget:
+            excluded_processed = 0
             with error_path.open("a",encoding="utf-8",newline="\n") as errors:
                 for (sid,) in connection.execute("SELECT id FROM rows ORDER BY rank,id LIMIT -1 OFFSET ?",(recipe.sample_budget,)):
                     errors.write(canonical({"sample_id":sid,"reason":"sample_budget"})+"\n")
+                    excluded_processed += 1
+                    if excluded_processed % 500 == 0:
+                        checkpoint(guard)
+                        progress(guard, "selecting_rows", excluded_processed, retained, excluded_rows=excluded_processed)
             connection.execute("DELETE FROM rows WHERE id NOT IN (SELECT id FROM rows ORDER BY rank,id LIMIT ?)", (recipe.sample_budget,))
             connection.commit()
             counts["budget_excluded"] = retained - recipe.sample_budget
+        selected_rows = retained - counts["budget_excluded"]
+        progress(guard, "selecting_rows", retained, retained, selected_rows=selected_rows)
+        progress(guard, "writing_shards", 0, selected_rows, shards=0)
+        written_rows = 0
         shards, pending = [], []
         pending_bytes = 0
         cursor = connection.execute("SELECT payload FROM rows ORDER BY id")
         splits = Counter()
         def flush():
+            nonlocal written_rows
             if not pending:
                 return
             checkpoint(guard)
@@ -363,6 +383,8 @@ def _execute_build(engine, build_id, recipe, inputs, guard):
                 insert_ignore(session, EntityGroup, groups)
                 insert_ignore(session, BuildSample, memberships)
             shards.append(shard)
+            written_rows += len(pending)
+            progress(guard, "writing_shards", written_rows, selected_rows, shards=len(shards))
             pending.clear()
         try:
             for (payload,) in cursor:
@@ -401,6 +423,7 @@ def _execute_build(engine, build_id, recipe, inputs, guard):
             session.add(MetricObservation(profile_run_id=profile.id, name="sample_counts", value=dict(counts)))
             result={"build_id": build_id, "manifest_hash": manifest_hash, "sample_count": counts["output_rows"]}
             remember_operation(session,guard,result)
+        progress(guard, "completed", counts["output_rows"], counts["output_rows"], input_rows=counts["input_rows"], shards=len(shards))
         return result
 
 def iter_build_rows(manifest, root=None, *, verify=True):
@@ -530,6 +553,8 @@ def execute_export(engine, build_id, guard=None):
             item.external_attr=0o100644<<16
             return item
         objects={item["storage_key"]:item for item in manifest["inputs"]+manifest["shards"]+[manifest["exclusions"]]}
+        copied_objects = copied_bytes = 0
+        progress(guard, "copying_objects", 0, len(objects), bytes_copied=0)
         with zipfile.ZipFile(target,"w",allowZip64=True) as archive:
             archive.writestr(info("manifest.json"),canonical(manifest))
             archive.writestr(info("manifest.sha256"),manifest_hash)
@@ -542,11 +567,15 @@ def execute_export(engine, build_id, guard=None):
                     while chunk:=source.read(1024*1024):
                         destination.write(chunk)
                         digest.update(chunk)
+                        copied_bytes += len(chunk)
                         count+=1
                         if count%16==0:
                             checkpoint(guard)
+                            progress(guard, "copying_objects", copied_objects, len(objects), bytes_copied=copied_bytes)
                 if digest.hexdigest()!=item["sha256"]:
                     raise ValueError("export artifact hash mismatch")
+                copied_objects += 1
+                progress(guard, "copying_objects", copied_objects, len(objects), bytes_copied=copied_bytes)
         checkpoint(guard)
         artifact=store_file(target)
     with session_scope(engine) as session:
@@ -557,4 +586,5 @@ def execute_export(engine, build_id, guard=None):
         validate_inputs(session,build.input_manifest)
         result={"build_id":build_id,**artifact}
         remember_operation(session,guard,result)
+    progress(guard, "completed", copied_objects, len(objects), bytes_copied=copied_bytes)
     return result

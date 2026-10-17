@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { ExperimentFeedback } from './ExperimentFeedback';
 import { CatalogApi, type DatasetBuild, type Role } from './api';
-import { canResearch, canReview, errorText, saveBlob, JsonValue, LoadState, StatusBadge, useApiData } from './ui';
+import { canResearch, canReview, errorText, saveBlob, formatBytes, JsonValue, LoadState, StatusBadge, useApiData } from './ui';
 
 export function DataEnginePage({ api, role, kind, onToast }: { api: CatalogApi; role: Role; kind: string; onToast: (message: string) => void }) {
   const builds = useApiData(client => client.builds(), api, [], 4000);
@@ -59,11 +59,18 @@ export function DataEnginePage({ api, role, kind, onToast }: { api: CatalogApi; 
     </section>
     <ExperimentFeedback api={api} role={role} onToast={onToast} onSubmitted={jobs.reload} />
     <section className="panel pp-space-top pp-body"><h2>我的后台任务</h2><p className="pp-footnote">显示最近 100 项任务。</p><LoadState loading={jobs.loading} error={jobs.error} onRetry={jobs.reload} />
-      <div className="table-wrap"><table><thead><tr><th>任务</th><th>操作</th><th>状态</th><th>执行次数</th><th>管理</th></tr></thead><tbody>{jobs.data?.items.map(job => <tr key={job.id} data-testid={`background-job-${job.id}`}><td>#{job.id}</td><td>{jobLabel(job.kind)}</td><td><StatusBadge status={job.status} />{job.error && <small className="cat-error">{job.error}</small>}</td><td>{job.attempts}</td><td>{job.kind === 'build.export' && job.status === 'succeeded' && <button className="btn small" onClick={() => void act(async () => saveBlob(await api.jobArtifact(job.id), `dataset-build-${String(job.result.build_id)}.zip`), '训练包已下载。')}>下载训练包</button>}{canResearch(role) && ['queued','running'].includes(job.status) && <button className="btn small" disabled={acting || job.cancel_requested} onClick={() => void act(() => api.cancelJob(job.id), '已请求取消。')}>{job.cancel_requested ? '取消中…' : '取消'}</button>}{canResearch(role) && ['failed','cancelled'].includes(job.status) && ['asset.derive','profile.run','bundle.build','build.run','mining.run','experiment.import','build.export'].includes(job.kind) && <button className="btn small" disabled={acting} onClick={() => void act(() => api.retryJob(job.id), '重试已排队。')}>重试</button>}</td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>任务</th><th>操作</th><th>状态</th><th>执行次数</th><th>管理</th></tr></thead><tbody>{jobs.data?.items.map(job => <tr key={job.id} data-testid={`background-job-${job.id}`}><td>#{job.id}</td><td>{jobLabel(job.kind)}</td><td><StatusBadge status={job.status} /><JobProgress value={job.progress} />{job.error && <small className="cat-error">{job.error}</small>}</td><td>{job.attempts}</td><td>{job.kind === 'build.export' && job.status === 'succeeded' && <button className="btn small" onClick={() => void act(async () => saveBlob(await api.jobArtifact(job.id), `dataset-build-${String(job.result.build_id)}.zip`), '训练包已下载。')}>下载训练包</button>}{canResearch(role) && ['queued','running'].includes(job.status) && <button className="btn small" disabled={acting || job.cancel_requested} onClick={() => void act(() => api.cancelJob(job.id), '已请求取消。')}>{job.cancel_requested ? '取消中…' : '取消'}</button>}{canResearch(role) && ['failed','cancelled'].includes(job.status) && ['asset.derive','profile.run','bundle.build','build.run','mining.run','experiment.import','build.export'].includes(job.kind) && <button className="btn small" disabled={acting} onClick={() => void act(() => api.retryJob(job.id), '重试已排队。')}>重试</button>}</td></tr>)}</tbody></table></div>
     </section>
   </>;
 }
 
 function jobLabel(kind: string) {
   return ({ 'qa.turn': '目录问答', 'summary.run': '整理摘要', 'research.run': '研究任务', 'collection.run': '来源采集', 'download.run': '下载文件', 'asset.import': '导入文件', 'asset.derive': '派生资产', 'bundle.build': '研究包打包', 'build.export': '训练包导出', 'profile.run': '质量画像', 'build.run': '样本构建', 'mining.run': '数据问题检查', 'experiment.import': '实验回流' } as Record<string, string>)[kind] || kind;
+}
+
+function JobProgress({ value }: { value: Record<string, unknown> }) {
+  if (typeof value.stage !== 'string' || typeof value.processed !== 'number') return null;
+  const labels: Record<string, string> = { reading_rows: '读取样本', selecting_rows: '选择样本', writing_shards: '写入分片', completed: '处理完成', copying_objects: '打包文件', deduplicating: '精确去重' };
+  const counts = value.counts as Record<string, unknown> | undefined;
+  return <small className="muted">{labels[value.stage] || '处理中'}：{value.processed.toLocaleString()}{typeof value.total === 'number' ? ` / ${value.total.toLocaleString()}` : ''}{typeof counts?.bytes_copied === 'number' ? ` · ${formatBytes(counts.bytes_copied)}` : ''}</small>;
 }
