@@ -133,23 +133,25 @@ function SummaryBoard({ api, role, go, onToast }: { api: CatalogApi; role: Role;
   if (!data) return <LoadState loading={board.loading} error={board.error} onRetry={board.reload} />;
   const done = data.counts.candidate + data.counts.confirmed + data.counts.corrected;
   const total = done + data.counts.generating + data.counts.failed;
-  const running = data.queue[0] ?? null;
+  const running = data.running ?? [];
   const pct = total > 0 ? Math.round(done / total * 100) : 100;
   return <div className="pp-body" data-testid="summary-board">
     {board.error ? <div className="pp-note pp-note-warning" role="alert"><span>刷新失败：{board.error}。下方保留上次成功读取的数据。</span><button className="btn" onClick={board.reload}>重试</button></div> : null}
     <div className="pp-stats ov-stats ops-board-stats">
-      <div className="pp-stat"><span className="muted">排队与处理中</span><div className={data.counts.generating > 0 ? 'pp-stat-alert' : ''}><strong data-testid="summary-generating">{data.counts.generating}</strong><span>条</span></div><small>每 5 秒自动刷新</small></div>
-      <div className="pp-stat"><span className="muted">已完成待核验</span><div><strong>{done}</strong><span>条</span></div><small>在「整理核验 · 模型摘要」中处理</small></div>
+      <div className="pp-stat"><span className="muted">排队与处理中</span><div className={data.counts.generating > 0 ? 'pp-stat-alert' : ''}><strong data-testid="summary-generating">{data.counts.generating}</strong><span>条</span></div><small>处理 {data.counts.running ?? 0} 条 · 排队 {data.counts.queued ?? data.counts.generating} 条</small></div>
+      <div className="pp-stat"><span className="muted">已生成</span><div><strong>{done}</strong><span>条</span></div><small>其中 {data.counts.candidate} 条待人工核验</small></div>
       <div className="pp-stat"><span className="muted">失败</span><div><strong>{data.counts.failed}</strong><span>条</span></div><small>可在下方重试</small></div>
       <div className="pp-stat"><span className="muted">完成率</span><div><strong>{pct}<span>%</span></strong></div><small>共 {total} 条总结任务</small></div>
     </div>
     <div className="ops-progress" aria-label={`完成率 ${pct}%`}><span style={{ width: `${pct}%` }} /></div>
-    {running ? <section className="panel ops-running" data-testid="summary-running">
-      <div className="ops-running-head"><span className="ops-pulse" aria-hidden="true" /><div><h3>正在处理：{running.dataset}</h3><p className="muted">版本 #{running.dataset_version_id} · 队列第 1 位{running.attempts > 0 ? ` · 第 ${running.attempts} 次尝试` : ''} · 已等待 {waited(running.created_at)}</p></div></div>
-    </section> : <div className="empty"><ShieldCheck size={24} /><strong>没有正在处理或排队的总结</strong><p>新采集的版本整理完成后会自动排队；也可在核验卡上手动发起。</p></div>}
-    {data.queue.length > 1 ? <section className="ops-queue"><h3>排队中 <span className="badge">{data.queue.length - 1}</span></h3><ol className="ops-queue-list">
-      {data.queue.slice(1).map(item => <li key={item.id}><span className="ops-pos">#{item.position}</span><strong>{item.dataset}</strong><span className="muted">版本 #{item.dataset_version_id}{item.attempts > 0 ? ` · 重试 ${item.attempts}` : ''} · 已等待 {waited(item.created_at)}</span></li>)}
-    </ol></section> : null}
+    {running.map(item => <section className="panel ops-running" data-testid="summary-running" key={item.id}>
+      <div className="ops-running-head">{!board.error ? <span className="ops-pulse" aria-hidden="true" /> : null}<div><h3>{board.error ? '上次记录处理' : '正在处理'}：{item.dataset}</h3><p className="muted">版本 #{item.dataset_version_id} · 第 {item.attempts} 次尝试 · 开始于 {dateTime(item.started_at)}</p></div></div>
+    </section>)}
+    {!running.length && !data.queue.length ? <div className="empty"><ShieldCheck size={24} /><strong>没有正在处理或排队的总结</strong><p>新采集的版本整理完成后会自动排队；也可在核验卡上手动发起。</p></div> : null}
+    {!running.length && data.queue.length > 0 ? <p className="pp-note" data-testid="summary-waiting">尚无确认执行中的总结，等待后台处理。</p> : null}
+    {data.queue.length > 0 ? <section className="ops-queue" data-testid="summary-queued"><h3>排队中 <span className="badge">{data.counts.queued ?? data.queue.length}</span></h3><ol className="ops-queue-list">
+      {data.queue.map(item => <li key={item.id}><span className="ops-pos">#{item.position}</span><strong>{item.dataset}</strong><span className="muted">版本 #{item.dataset_version_id}{item.attempts > 0 ? ` · 已尝试 ${item.attempts} 次` : ''} · 已等待 {waited(item.created_at)}{item.error ? ` · 上次失败：${item.error}` : ''}</span></li>)}
+    </ol>{data.counts.queued > data.queue.length ? <p className="muted">展示前 {data.queue.length} 条排队任务。</p> : null}</section> : null}
     <section className="ops-recent"><h3>最近完成 <span className="badge">{data.recent.length}</span></h3>
       {data.recent.length ? <div className="table-wrap"><table><thead><tr><th>数据集</th><th>状态</th><th>依据</th><th>模型</th><th>完成时间</th><th></th></tr></thead><tbody>
         {data.recent.map(item => <tr key={item.id} data-testid={`summary-recent-${item.id}`}><td><strong>{item.dataset}</strong><small>版本 #{item.dataset_version_id}</small></td>
@@ -163,7 +165,7 @@ function SummaryBoard({ api, role, go, onToast }: { api: CatalogApi; role: Role;
     {data.failed.length ? <section className="ops-failed"><h3>失败 <span className="badge bad">{data.failed.length}</span></h3><ol className="ops-queue-list">
       {data.failed.map(item => <li key={item.id} data-testid={`summary-failed-${item.id}`}><span className="ops-pos">✕</span><strong>{item.dataset}</strong><span className="muted">版本 #{item.dataset_version_id} · {item.attempts} 次尝试 · {item.error}</span><button className="btn" disabled={!canResearch(role) || retrying} title={!canResearch(role) ? '需要研究员及以上角色' : '重新排队生成'} onClick={() => void retry(item.dataset_version_id)}><RotateCcw size={13} />重试</button></li>)}
     </ol></section> : null}
-    <p className="pp-footnote">总结由后台 worker 逐条生成（每条一次模型调用，通常几秒到几十秒）；完成后进入「模型摘要」核验队列，人工确认后才生效。</p>
+    <p className="pp-footnote">状态更新于 {dateTime(data.as_of)}，每 5 秒刷新；仅后台已开始且状态仍有效的任务显示处理中，意外断开约 2 分钟后转回排队。失败最多尝试 3 次；生成结果经人工核验后才生效。</p>
   </div>;
 }
 

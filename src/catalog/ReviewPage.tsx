@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ShieldCheck, Sparkles, X } from 'lucide-react';
 import { CatalogApi, type EnrichmentItem, type Id, type ReviewDecision, type Role } from './api';
 import { canResearch, canReview, errorText, LoadState, StatusBadge, useApiData } from './ui';
-import { buildHighlightTokens, DatasetFacts, highlightText, ReviewValue } from './reviewValue';
+import { buildHighlightTokens, DatasetFacts, highlightText, reviewVersionMetadata, ReviewValue } from './reviewValue';
 
 const KIND_LABELS: Record<string, string> = { quality: '信息完整度', schema: '结构摘要', embedding: '嵌入', llm_summary: '模型摘要' };
 const EVIDENCE_KINDS: Record<string, string> = { card: '卡片', metadata: '元数据', derivation: '派生' };
@@ -45,9 +45,10 @@ function ReviewCard({ api, item, role, agentEnabled, onReviewed, onAgentCandidat
     if (found.status === 'candidate') { setAgentBusy(null); onToast(`${item.dataset || ''} 的智能体总结已生成，请人工核验`); onAgentCandidate(found.id); }
     else if (found.status === 'failed') { setAgentBusy(null); const message = found.value && typeof found.value.error === 'string' ? found.value.error : '智能体总结失败，请重试。'; setError(message); }
   }, [agentTrack.data, agentBusy, item.dataset, onAgentCandidate, onToast]);
-  const evidence = detail.data?.evidence.filter(e => item.evidence_ids.map(String).includes(String(e.id)) && (item.dataset_version_id == null || e.dataset_version_id == null || String(item.dataset_version_id) === String(e.dataset_version_id))) ?? [];
+  const evidence = detail.data?.evidence.filter(e => item.evidence_ids.map(String).includes(String(e.id)) && (item.dataset_version_id != null && e.dataset_version_id != null && String(item.dataset_version_id) === String(e.dataset_version_id))) ?? [];
   const disabled = !canReview(role) || acting;
-  const tokens = useMemo(() => buildHighlightTokens(item.value, detail.data?.dataset), [item.value, detail.data?.dataset]);
+  const versionMetadata = reviewVersionMetadata(detail.data?.versions, item.dataset_version_id);
+  const tokens = useMemo(() => buildHighlightTokens(item.value, versionMetadata), [item.value, versionMetadata]);
   const correction = useMemo(() => {
     if (!correcting) return null;
     try { const parsed: unknown = JSON.parse(value); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false as const, message: '更正内容必须是有效的 JSON 对象。' }; return { ok: true as const, value: parsed as Record<string, unknown> }; }
@@ -55,7 +56,7 @@ function ReviewCard({ api, item, role, agentEnabled, onReviewed, onAgentCandidat
   }, [correcting, value]);
   return <article className="panel cat-review-card" data-testid={`enrichment-${item.id}`}><div className="cat-review-head"><div><h2>{item.dataset || `数据集 #${item.dataset_id}`}</h2><p className="pp-footnote">版本 #{item.dataset_version_id ?? '待核对'} · {item.producer}</p></div><div className="rv-head-actions"><button className="btn" disabled={!canResearch(role) || acting || agentBusy !== null || !agentEnabled} title={!agentEnabled ? '未配置模型服务，无法生成智能体总结' : !canResearch(role) ? '需要研究员及以上角色' : '读取该版本留存的元数据与证据，由智能体生成带引用的数据集总结，完成后进入核验队列'} onClick={() => void askAgent()} data-testid="agent-summary"><Sparkles size={14} />{agentBusy !== null ? '智能体总结中…' : '智能体核验总结'}</button><StatusBadge status={item.status} /></div></div>
     {agentBusy !== null && <p className="pp-note rv-note" data-testid="agent-summary-progress"><Sparkles size={15} /><span>智能体正在读取版本证据并生成总结，通常需要几十秒；完成后会自动打开生成的「模型摘要」候选，无需等待。</span></p>}
-    {detail.data?.dataset && <DatasetFacts dataset={detail.data.dataset} />}
+    {detail.data && <DatasetFacts dataset={versionMetadata} versionId={item.dataset_version_id} />}
     <div className="cat-evidence-layout"><section><h3>{item.kind === 'quality' ? '目录信息完整度' : KIND_LABELS[item.kind] ?? item.kind} · 候选值</h3><p className="pp-footnote">自动整理结果，需依据右侧版本证据核验。</p>{correcting ? <><label className="pp-form-field">更正候选内容<textarea className="cat-code-input" rows={12} value={value} onChange={e => setValue(e.target.value)} /></label>{correction && (correction.ok ? <p className="rv-correction-ok" aria-live="polite">✓ 有效 JSON · {Object.keys(correction.value).length} 个键，保存前可对照下方预览</p> : <p className="cat-error" role="alert">{correction.message}</p>)}{correction?.ok && <div className="rv-correction-preview"><ReviewValue item={{ ...item, value: correction.value }} onEvidenceJump={jumpToEvidence} /></div>}</> : <ReviewValue item={item} onEvidenceJump={jumpToEvidence} />}</section>
     <section><h3>关联证据</h3><LoadState loading={detail.loading} error={detail.error} onRetry={detail.reload} />{!detail.loading && evidence.map(e => <blockquote key={e.id} id={`evidence-${String(e.id)}`} className={`cat-evidence ${flashId !== null && String(flashId) === String(e.id) ? 'rv-flash' : ''}`}><p className="pp-footnote"><span className="badge">{EVIDENCE_KINDS[e.kind] ?? e.kind}</span> #{e.id} · <span className="pp-mono">{e.location}</span></p><p>{e.excerpt ? highlightText(e.excerpt, tokens) : '未提供摘录'}</p></blockquote>)}{!detail.loading && !evidence.length && <p className="muted">没有可定位的关联证据。可标记待补资料，避免将未验证信息作为事实。</p>}</section></div>
     <label className="pp-form-field">核验说明<textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="记录依据、修正原因或需要补充的资料" /></label>{error && <p className="cat-error" role="alert">{error}</p>}

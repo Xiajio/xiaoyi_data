@@ -197,3 +197,215 @@ def test_backfill_submits_only_versions_without_summary(engine, monkeypatch):
     from xiaoyi_catalog.summary_runtime import backfill_summaries
     assert backfill_summaries(engine) == {"submitted": 1, "scanned": 1}
     assert backfill_summaries(engine)["submitted"] == 0
+
+
+@pytest.fixture()
+def board_client(engine):
+    from fastapi.testclient import TestClient
+    from xiaoyi_catalog.service import create_app
+    with TestClient(create_app(str(engine.url.database), dev_auth=True)) as client:
+        yield client
+
+
+def board(client):
+    response = client.get("/api/agent-summaries")
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_board_only_reports_a_started_leased_attempt_as_running(engine, board_client):
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+    initial = board(board_client)
+    assert initial["running"] == [] and initial["counts"]["queued"] == 1
+    assert initial["queue"][0]["id"] == ident and initial["queue"][0]["position"] == 1
+
+    class ObservingModel(FakeModel):
+        def complete(self, *args):
+            active = board(board_client)
+            assert active["counts"]["running"] == 1 and active["counts"]["queued"] == 0
+            assert active["queue"] == []
+            assert active["running"][0]["id"] == ident
+            assert active["running"][0]["attempts"] == 1
+            assert active["running"][0]["started_at"]
+            assert "owner" not in active["running"][0]
+            return super().complete(*args)
+
+    assert run_once(engine, llm=ObservingModel())
+    completed = board(board_client)
+    assert completed["running"] == [] and completed["counts"]["generating"] == 0
+    assert completed["counts"]["candidate"] == 1
+    assert "execution" not in read(engine, ident).value
+
+
+def test_board_rejects_expired_or_replaced_crash_marker_and_worker_recovers(engine, board_client):
+    from datetime import timedelta
+    from xiaoyi_catalog.models import utcnow
+    from xiaoyi_catalog.models_runtime import WorkerLease
+    from xiaoyi_catalog.worker import acquire_lease, release_lease
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+    assert acquire_lease(engine, "crashed")
+    with session_scope(engine) as session:
+        session.get(Enrichment, ident).value = {"attempts": 1, "execution": {
+            "owner": "crashed", "id": "abandoned-attempt", "started_at": utcnow().isoformat()}}
+        session.get(WorkerLease, "research_worker").expires_at = utcnow() - timedelta(seconds=1)
+    expired = board(board_client)
+    assert expired["running"] == [] and expired["counts"]["queued"] == 1
+    assert expired["queue"][0]["id"] == ident
+    # A new worker can spend time on other work without reviving an old marker.
+    assert acquire_lease(engine, "replacement")
+    assert board(board_client)["running"] == []
+    release_lease(engine, "replacement")
+    assert run_once(engine, llm=FakeModel())
+    assert read(engine, ident).status == "candidate"
+    assert read(engine, ident).value["attempts"] == 2
+
+
+def test_expired_summary_cannot_publish_and_recovery_keeps_one_candidate(engine, board_client):
+    from datetime import timedelta
+    from xiaoyi_catalog.agent_runtime import LeaseLost
+    from xiaoyi_catalog.models import utcnow
+    from xiaoyi_catalog.models_runtime import WorkerLease
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+
+    class ExpiringModel(FakeModel):
+        def complete(self, *args):
+            with session_scope(engine) as session:
+                session.get(WorkerLease, "research_worker").expires_at = utcnow() - timedelta(seconds=1)
+            assert board(board_client)["running"] == []
+            return super().complete(*args)
+
+    with pytest.raises(LeaseLost):
+        run_once(engine, llm=ExpiringModel())
+    interrupted = read(engine, ident)
+    assert interrupted.status == "generating" and "execution" not in interrupted.value
+    assert "claims" not in interrupted.value
+    assert run_once(engine, llm=FakeModel())
+    assert read(engine, ident).status == "candidate"
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count(Audit.id)).where(Audit.action == "agent_summary_completed")) == 1
+
+
+def test_replaced_worker_result_cannot_overwrite_new_summary(engine):
+    from datetime import timedelta
+    from xiaoyi_catalog.agent_runtime import LeaseLost
+    from xiaoyi_catalog.models import utcnow
+    from xiaoyi_catalog.models_runtime import WorkerLease
+    from xiaoyi_catalog.worker import acquire_lease, release_lease
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+
+    class ReplacedModel(FakeModel):
+        def complete(self, *args):
+            with session_scope(engine) as session:
+                session.get(WorkerLease, "research_worker").expires_at = utcnow() - timedelta(seconds=1)
+            assert acquire_lease(engine, "new-worker")
+            execute_summary(engine, ident, llm=FakeModel(), owner="new-worker")
+            release_lease(engine, "new-worker")
+            return super().complete(*args)
+
+    with pytest.raises(LeaseLost):
+        run_once(engine, llm=ReplacedModel())
+    result = read(engine, ident)
+    assert result.status == "candidate" and result.value["attempts"] == 2
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count(Audit.id)).where(Audit.action == "agent_summary_completed")) == 1
+
+
+def test_failed_attempt_returns_to_queue_without_running_marker(engine, board_client):
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+    assert run_once(engine, llm=FakeModel(fail=True))
+    pending = board(board_client)
+    assert pending["running"] == [] and pending["queue"][0]["attempts"] == 1
+    assert "超时" in pending["queue"][0]["error"]
+    assert "execution" not in read(engine, ident).value
+
+
+def test_lease_without_execution_marker_does_not_start_legacy_queue(engine, board_client):
+    from xiaoyi_catalog.worker import acquire_lease, release_lease
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+    assert acquire_lease(engine, "busy-on-qa")
+    pending = board(board_client)
+    assert pending["running"] == [] and pending["queue"][0]["id"] == ident
+    blocked_model = FakeModel()
+    execute_summary(engine, ident, llm=blocked_model)
+    assert blocked_model.calls == 0
+    release_lease(engine, "busy-on-qa")
+
+
+def test_repeated_interruptions_reach_retry_limit_without_another_model_call(engine):
+    from xiaoyi_catalog.agent_runtime import LeaseLost
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+
+    class InterruptedModel(FakeModel):
+        def complete(self, *args):
+            self.calls += 1
+            raise LeaseLost("worker stopped")
+
+    model = InterruptedModel()
+    for _ in range(3):
+        with pytest.raises(LeaseLost):
+            run_once(engine, llm=model)
+    assert run_once(engine, llm=model)
+    row = read(engine, ident)
+    assert model.calls == 3 and row.status == "failed" and row.value["attempts"] == 3
+    assert "重试上限" in row.value["error"]
+    assert submit(engine, dataset, version)["status"] == "generating"
+    assert read(engine, ident).value == {"attempts": 0}
+
+
+@pytest.mark.parametrize("cleanup", [False, True], ids=["publish", "cleanup"])
+def test_sqlite_summary_write_serializes_attempt_check_and_replacement(engine, cleanup):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from sqlalchemy import update
+    from xiaoyi_catalog.models import utcnow
+    from xiaoyi_catalog.models_runtime import WorkerLease
+    from xiaoyi_catalog.summary_runtime import _leased_summary, _serialize_summary_write
+    from xiaoyi_catalog.worker import acquire_lease
+    dataset, version, _ = seed(engine)
+    ident = submit(engine, dataset, version)["id"]
+    assert acquire_lease(engine, "old-worker")
+    with session_scope(engine) as session:
+        session.get(Enrichment, ident).value = {"attempts": 1, "execution": {
+            "id": "old-attempt", "owner": "old-worker", "started_at": utcnow().isoformat()}}
+    checked, finish_write, replacement_started, replacement_done = Event(), Event(), Event(), Event()
+
+    def old_write():
+        with session_scope(engine) as session:
+            if cleanup:
+                _serialize_summary_write(session)
+                row = session.get(Enrichment, ident, with_for_update=True)
+            else:
+                row = _leased_summary(session, ident, "old-worker", "old-attempt")
+            assert row.value["execution"]["id"] == "old-attempt"
+            checked.set()
+            assert finish_write.wait(5)
+            row.value = {"attempts": 1} if cleanup else {"attempts": 1, "rationale": "old result"}
+
+    def replacement():
+        assert checked.wait(5)
+        replacement_started.set()
+        with session_scope(engine) as session:
+            session.execute(update(WorkerLease).where(WorkerLease.name == "research_worker")
+                            .values(owner="new-worker"))
+            row = session.get(Enrichment, ident)
+            row.value = {"attempts": 2, "execution": {"id": "new-attempt", "owner": "new-worker"}}
+        replacement_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_future = pool.submit(old_write)
+        replacement_future = pool.submit(replacement)
+        try:
+            assert replacement_started.wait(5)
+            assert not replacement_done.wait(0.2), "takeover must wait for checked write/cleanup to commit"
+        finally:
+            finish_write.set()
+        old_future.result(timeout=5)
+        replacement_future.result(timeout=5)
+    assert read(engine, ident).value["execution"]["id"] == "new-attempt"

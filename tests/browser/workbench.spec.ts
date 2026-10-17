@@ -2,7 +2,7 @@ import { dashboardFixture } from './dashboard-fixture';
 import { expect, test, type Page } from '@playwright/test';
 
 type Call = { path: string; body: Record<string, unknown> };
-async function mockWorkbench(page: Page, { login = false, role = 'admin', withAssets = false } = {}) {
+async function mockWorkbench(page: Page, { login = false, role = 'admin', withAssets = false, summaryRunning = true } = {}) {
   let authenticated = !login; const calls: Call[] = [];
   const dataset = { id: 1, source_key: 'lab/news', name: '新闻语料', author: 'lab', url: 'https://example.org/news', license: 'mit', license_class: 'permissive', modalities: ['text'], modality_source: 'tags', task_categories: ['text-classification'], languages: ['zh'], size_rows: 100, downloads: 4, likes: 1, missing: [], dataset_version_id: 11 };
   const evidence = [{ id: 101, dataset_version_id: 11, kind: 'card', location: 'README.md:4', excerpt: '中文新闻语料，MIT 许可，包含 100 行。' }];
@@ -34,10 +34,12 @@ async function mockWorkbench(page: Page, { login = false, role = 'admin', withAs
     if (path === '/api/dataset-versions/11/agent-summary' && method === 'POST') { if (!summary) { summary = { id: 20, dataset_id: 1, dataset_version_id: 11, kind: 'llm_summary', producer: 'agent-summary/1' }; summaryPolls = 0; } return json(summaryCandidate(), 202); }
     if (path === '/api/dataset-versions/31/agent-summary' && method === 'POST') return json({ id: 23, dataset_id: 3, dataset_version_id: 31, kind: 'llm_summary', producer: 'agent-summary/1', status: 'generating', value: { attempts: 0 }, evidence_ids: [] }, 202);
     if (path === '/api/agent-summaries') return json({
-      counts: { generating: 2, candidate: 1, confirmed: 0, corrected: 0, failed: 1 },
+      as_of: '2026-10-16T08:10:00+00:00',
+      counts: { generating: 2, running: summaryRunning ? 1 : 0, queued: summaryRunning ? 1 : 2, candidate: 1, confirmed: 1, corrected: 0, failed: 1 },
+      running: summaryRunning ? [{ id: 21, dataset: 'lab/news', dataset_id: 1, dataset_version_id: 11, attempts: 1, started_at: '2026-10-16T08:09:00+00:00' }] : [],
       queue: [
         { id: 21, dataset: 'lab/news', dataset_id: 1, dataset_version_id: 11, position: 1, attempts: 1, created_at: '2026-10-16T08:00:00+00:00', updated_at: null },
-        { id: 22, dataset: 'lab/images', dataset_id: 2, dataset_version_id: 21, position: 2, attempts: 0, created_at: '2026-10-16T08:05:00+00:00', updated_at: null }],
+        { id: 22, dataset: 'lab/images', dataset_id: 2, dataset_version_id: 21, position: 2, attempts: 0, created_at: '2026-10-16T08:05:00+00:00', updated_at: null }].filter(item => !summaryRunning || item.id !== 21).map((item, index) => ({ ...item, position: index + 1 })),
       recent: [{ id: 20, dataset: 'lab/news', dataset_version_id: 11, status: 'candidate', claims: 3, demoted: 1, model: 'fake-summary', tokens: 1700, updated_at: '2026-10-16T07:50:00+00:00' }],
       failed: [{ id: 19, dataset: 'lab/broken', dataset_version_id: 31, attempts: 3, error: '模型输出未通过核验：模型引用未通过原文核验；未发布该总结', updated_at: '2026-10-16T07:40:00+00:00' }],
     });
@@ -118,13 +120,23 @@ test('summary board shows the running queue, recent completions and failed retri
   await expect(board).toBeVisible();
   await expect(page.getByTestId('summary-generating')).toHaveText('2');
   await expect(page.getByTestId('summary-running')).toContainText('lab/news');
-  await expect(page.getByTestId('summary-running')).toContainText('队列第 1 位');
+  await expect(page.getByTestId('summary-running')).toContainText('第 1 次尝试');
+  await expect(page.getByTestId('summary-queued')).not.toContainText('lab/news');
+  await expect(board).toContainText('其中 1 条待人工核验');
   await expect(board).toContainText('lab/images');
   await expect(page.getByTestId('summary-recent-20')).toContainText('3 条引用');
   await expect(page.getByTestId('summary-recent-20')).toContainText('1 条降级');
   await page.getByTestId('summary-failed-19').getByRole('button', { name: '重试' }).click();
   await expect(page.getByRole('status')).toContainText('已重新排队');
   expect(calls.find(call => call.path === '/api/dataset-versions/31/agent-summary')).toBeTruthy();
+});
+
+test('a queued head is not presented as an executing summary', async ({ page }) => {
+  await mockWorkbench(page, { summaryRunning: false }); await page.goto('/'); await nav(page, '运行与审计');
+  await expect(page.getByTestId('summary-running')).toHaveCount(0);
+  await expect(page.getByTestId('summary-waiting')).toBeVisible();
+  await expect(page.getByTestId('summary-queued')).toContainText('lab/news');
+  await expect(page.getByTestId('summary-queued')).toContainText('lab/images');
 });
 
 test('approved snapshots offer a research bundle and readers cannot approve downloads', async ({ page }) => {

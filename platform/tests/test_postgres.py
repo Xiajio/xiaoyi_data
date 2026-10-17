@@ -58,7 +58,7 @@ def test_pg_migrations_versions_vector_and_task(postgres_engine):
     embed_all(engine, embedder)
     with session_scope(engine) as session:
         assert session.scalar(text("SELECT extversion FROM pg_extension WHERE extname='vector'"))
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0005_collection_jobs"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0006_catalog_qa"
         assert session.scalar(text("SELECT pg_typeof(vector)::text FROM vector_embedding LIMIT 1")) == "vector"
         result = match_datasets(session, SearchFilter(modalities=("text",)), query_text="text", embedder=embedder)
         assert result["ranking"] == "structured+cosine"
@@ -139,3 +139,37 @@ def test_pg_collection_schedule_and_active_scope_are_idempotent(postgres_engine)
         job = session.scalar(select(CollectionJob))
         assert job.status == "completed"
         assert job.dataset_version_ids and job.analysis_status == "rule_based"
+
+
+def test_pg_summary_execution_is_visible_only_during_a_leased_attempt(postgres_engine):
+    from xiaoyi_catalog.llm import ModelResponse
+    from xiaoyi_catalog.models import Enrichment
+    from xiaoyi_catalog.summary_runtime import active_summary_executions, submit_summary
+    from xiaoyi_catalog.worker import run_once
+
+    engine = postgres_engine
+    init_db(engine)
+    collect(engine, FakeAdapter([make_raw("pg/summary", revision="a" * 40,
+        license="mit", card="Dataset card", tasks=("text-classification",))]), CollectScope())
+    with session_scope(engine) as session:
+        dataset = session.scalar(select(Dataset))
+        version = session.scalar(select(DatasetVersion))
+        ident = submit_summary(session, dataset.id, version.id, "ci")["id"]
+        assert active_summary_executions(session) == []
+
+    class ObservingModel:
+        def complete(self, schema, instruction, data):
+            with session_scope(engine) as session:
+                active = active_summary_executions(session)
+                assert [row.id for row in active] == [ident]
+                assert active[0].value["attempts"] == 1
+            return ModelResponse(schema.model_validate({
+                "rationale": "PostgreSQL summary integration check",
+                "claims": [], "uncertainty": ["Only source metadata is available"],
+            }), "test-summary", {"total_tokens": 1})
+
+    assert run_once(engine, llm=ObservingModel())
+    with session_scope(engine) as session:
+        assert active_summary_executions(session) == []
+        summary = session.get(Enrichment, ident)
+        assert summary.status == "candidate" and "execution" not in summary.value

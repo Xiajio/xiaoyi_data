@@ -7,6 +7,7 @@ llm_summary/candidate 进入人工核验队列——智能体产出与自动整�
 from __future__ import annotations
 
 import json
+import uuid
 
 from pydantic import Field, field_validator
 from sqlalchemy import select, update
@@ -14,6 +15,8 @@ from sqlalchemy import select, update
 from .db import session_scope
 from .llm import (EvidenceClaim, LLMClient, ModelConfigurationError, ModelOutputError, StrictModel)
 from .models import Audit, Dataset, DatasetVersion, Enrichment, Evidence, utcnow
+from .models_runtime import WorkerLease
+from .agent_runtime import LeaseLost
 from .qa_tools import _safe
 
 PRODUCER_PREFIX = "agent-summary/"
@@ -144,52 +147,126 @@ def _error_text(exc: Exception) -> str:
     return "总结执行失败，查询参数或响应不符合约定；未发布该总结"
 
 
-def execute_summary(engine, enrichment_id: int, *, llm=None, guard=lambda: None) -> None:
+def active_summary_executions(session, *, now=None) -> list[Enrichment]:
+    """Only a recorded attempt held by the current live worker is executing.
+
+    Legacy generating records and expired/replaced execution markers remain queued.
+    This is a lease-based observation, not a promise that a remote model is responsive.
+    """
+    from .worker import LEASE_NAME
+    now = now or utcnow()
+    lease = session.scalar(select(WorkerLease).where(
+        WorkerLease.name == LEASE_NAME, WorkerLease.expires_at > now))
+    if lease is None:
+        return []
+    return list(session.scalars(select(Enrichment).where(
+        Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"),
+        Enrichment.status == "generating",
+        Enrichment.value["execution"]["owner"].as_string() == lease.owner,
+        Enrichment.value["execution"]["id"].as_string().is_not(None),
+        Enrichment.value["execution"]["started_at"].as_string().is_not(None))
+        .order_by(Enrichment.id)))
+
+
+def _serialize_summary_write(session):
+    # SQLite ignores FOR UPDATE and its legacy driver does not BEGIN for SELECT.
+    # Acquire its write lock before checking the lease/attempt to fence takeover.
+    connection = session.connection()
+    if connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def _leased_summary(session, enrichment_id: int, owner: str, execution_id: str | None = None):
+    # Lock the lease before the row so a replacement worker cannot publish concurrently.
+    _serialize_summary_write(session)
+    from .worker import LEASE_NAME
+    lease = session.scalar(select(WorkerLease).where(
+        WorkerLease.name == LEASE_NAME, WorkerLease.owner == owner,
+        WorkerLease.expires_at > utcnow()).with_for_update())
+    if lease is None:
+        raise LeaseLost("总结执行租约已失效；等待下一工作进程恢复")
+    row = session.get(Enrichment, enrichment_id, with_for_update=True)
+    if not row or row.status != "generating":
+        return None
+    if execution_id is not None and (row.value or {}).get("execution", {}).get("id") != execution_id:
+        raise LeaseLost("总结已由另一执行接管；忽略旧执行结果")
+    return row
+
+
+def execute_summary(engine, enrichment_id: int, *, llm=None, guard=lambda: None, owner=None) -> None:
+    # Direct callers use the same lease boundary as the background worker.
+    if owner is None:
+        from .worker import acquire_lease, release_lease
+        owner = uuid.uuid4().hex
+        if not acquire_lease(engine, owner):
+            return
+        try:
+            return execute_summary(engine, enrichment_id, llm=llm, guard=guard, owner=owner)
+        finally:
+            release_lease(engine, owner)
     guard()
+    execution_id = uuid.uuid4().hex
     with session_scope(engine) as session:
-        row = session.get(Enrichment, enrichment_id)
-        if not row or row.status != "generating":
+        row = _leased_summary(session, enrichment_id, owner)
+        if row is None:
             return
         attempts = int((row.value or {}).get("attempts", 0)) + 1
+        if attempts > MAX_ATTEMPTS:
+            row.status, row.value = "failed", {"attempts": attempts - 1,
+                "error": "总结执行多次中断，已达到自动重试上限；请检查后台服务后手动重试"}
+            return
         data = _bounded_inputs(session, row)
         if data is None:
             row.status, row.value = "failed", {"attempts": attempts, "error": "版本或数据集已不可用，未生成总结"}
             return
+        row.value = {"attempts": attempts, "execution": {
+            "id": execution_id, "owner": owner, "started_at": utcnow().isoformat()}}
     try:
-        llm = llm or LLMClient.from_env()
-        response = llm.complete(DatasetSummary, INSTRUCTION, data)
-        guard()
-        summary = DatasetSummary.model_validate(response.value.model_dump())
-        grounded, uncertainty, cited = _ground(summary, data["evidence"])
-    except Exception as exc:
+        try:
+            llm = llm or LLMClient.from_env()
+            response = llm.complete(DatasetSummary, INSTRUCTION, data)
+            guard()
+            summary = DatasetSummary.model_validate(response.value.model_dump())
+            grounded, uncertainty, cited = _ground(summary, data["evidence"])
+        except LeaseLost:
+            raise
+        except Exception as exc:
+            guard()
+            with session_scope(engine) as session:
+                row = _leased_summary(session, enrichment_id, owner, execution_id)
+                if row is None:
+                    return
+                row.status = "failed" if attempts >= MAX_ATTEMPTS else "generating"
+                row.value = {"attempts": attempts, "error": _error_text(exc)}
+            return
         guard()
         with session_scope(engine) as session:
-            row = session.get(Enrichment, enrichment_id)
-            if not row or row.status != "generating":
+            row = _leased_summary(session, enrichment_id, owner, execution_id)
+            if row is None:
                 return
-            failed = attempts >= MAX_ATTEMPTS
-            row.status = "failed" if failed else "generating"
-            row.value = {"attempts": attempts, "error": _error_text(exc)}
-        return
-    with session_scope(engine) as session:
-        row = session.get(Enrichment, enrichment_id)
-        if not row or row.status != "generating":
-            return
-        # 同一版本只保留一条生效的生成中记录；更早的重复提交一并失效。
-        session.execute(update(Enrichment).where(
-            Enrichment.dataset_version_id == row.dataset_version_id, Enrichment.kind == "llm_summary",
-            Enrichment.producer.like(PRODUCER_PREFIX + "%"), Enrichment.status == "generating",
-            Enrichment.id != row.id).values(status="superseded"))
-        row.status = "candidate"
-        row.evidence_ids = cited
-        row.value = {"summary_kind": "dataset_review", "rationale": summary.rationale,
-                     "claims": [claim.model_dump() for claim in grounded],
-                     "uncertainty": uncertainty, "model": str(response.model)[:256],
-                     "usage": response.usage, "prompt_version": PROMPT_VERSION, "attempts": attempts,
-                     "demoted_claims": len(summary.claims) - len(grounded)}
-        demoted_note = f"，{len(summary.claims) - len(grounded)} 条引用未通过核验已降级" if len(summary.claims) > len(grounded) else ""
-        session.add(Audit(actor="agent", action="agent_summary_completed",
-                          detail=f"整理候选 #{row.id} 智能体总结已生成，待人工核验（引用证据 {len(cited)} 条{demoted_note}）"))
+            # 同一版本只保留一条生效的生成中记录；更早的重复提交一并失效。
+            session.execute(update(Enrichment).where(
+                Enrichment.dataset_version_id == row.dataset_version_id, Enrichment.kind == "llm_summary",
+                Enrichment.producer.like(PRODUCER_PREFIX + "%"), Enrichment.status == "generating",
+                Enrichment.id != row.id).values(status="superseded"))
+            row.status = "candidate"
+            row.evidence_ids = cited
+            row.value = {"summary_kind": "dataset_review", "rationale": summary.rationale,
+                         "claims": [claim.model_dump() for claim in grounded],
+                         "uncertainty": uncertainty, "model": str(response.model)[:256],
+                         "usage": response.usage, "prompt_version": PROMPT_VERSION, "attempts": attempts,
+                         "demoted_claims": len(summary.claims) - len(grounded)}
+            demoted_note = f"，{len(summary.claims) - len(grounded)} 条引用未通过核验已降级" if len(summary.claims) > len(grounded) else ""
+            session.add(Audit(actor="agent", action="agent_summary_completed",
+                              detail=f"整理候选 #{row.id} 智能体总结已生成，待人工核验（引用证据 {len(cited)} 条{demoted_note}）"))
+    finally:
+        # A normal exception/stop must not make this owner look busy on its next loop.
+        # A process crash leaves a marker which the board rejects after lease expiry.
+        with session_scope(engine) as session:
+            _serialize_summary_write(session)
+            row = session.get(Enrichment, enrichment_id, with_for_update=True)
+            if row and row.status == "generating" and (row.value or {}).get("execution", {}).get("id") == execution_id:
+                row.value = {key: value for key, value in row.value.items() if key != "execution"}
 
 
 def backfill_summaries(engine, *, limit: int = 200) -> dict:
@@ -210,7 +287,7 @@ def backfill_summaries(engine, *, limit: int = 200) -> dict:
     return {"submitted": submitted, "scanned": len(rows)}
 
 
-def process_next_summary(engine, *, llm=None, guard=lambda: None) -> bool:
+def process_next_summary(engine, *, llm=None, guard=lambda: None, owner=None) -> bool:
     guard()
     with session_scope(engine) as session:
         row_id = session.scalar(select(Enrichment.id).where(
@@ -218,5 +295,5 @@ def process_next_summary(engine, *, llm=None, guard=lambda: None) -> bool:
             Enrichment.status == "generating").order_by(Enrichment.id).limit(1))
     if row_id is None:
         return False
-    execute_summary(engine, row_id, llm=llm, guard=guard)
+    execute_summary(engine, row_id, llm=llm, guard=guard, owner=owner)
     return True

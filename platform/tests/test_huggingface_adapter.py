@@ -178,12 +178,21 @@ def test_installed_sdk_detail_timeout_and_minimal_expand(tmp_path):
         assert kwargs["expand"] == DETAIL_FIELDS and "siblings" not in kwargs["expand"]
 
 
-def test_real_sdk_http_requests_override_explicit_none_and_keep_hooks(monkeypatch):
+@pytest.fixture
+def isolated_hub_http(monkeypatch):
+    from huggingface_hub import constants
+
+    # Hub 2.2 may fetch /api/agent-harnesses while constructing User-Agent.
+    # Isolate catalog HTTP assertions from optional telemetry and its global cache.
+    # Keep the real SDK pagination, request hooks and transport retry paths intact.
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_TELEMETRY", True)
+
+
+def test_real_sdk_http_requests_override_explicit_none_and_keep_hooks(monkeypatch, isolated_hub_http):
     from huggingface_hub import HfApi
     from huggingface_hub.utils import httpx
     from huggingface_hub.utils import _http
     import huggingface_hub.hf_api as api_module
-    from xiaoyi_catalog.adapters.base import DatasetRef
     from xiaoyi_catalog.adapters import huggingface as adapter_module
     seen, original_hooks = [], []
     def transport(request):
@@ -202,7 +211,10 @@ def test_real_sdk_http_requests_override_explicit_none_and_keep_hooks(monkeypatc
         refs = list(adapter.list(CollectScope(limit=1)))
         adapter.fetch_detail(refs[0])
         # Pagination explicitly sends timeout=None; a client default alone fails this.
-        assert len(seen) == len(original_hooks) == 2
+        assert seen == original_hooks
+        assert [request.url.path for request in seen] == [
+            "/api/datasets", "/api/datasets/org/pinned/revision/" + "a" * 40,
+        ]
         for request in seen:
             assert all(value is not None and 0 < value <= 30 for value in request.extensions["timeout"].values())
             assert "siblings" not in request.url.params.get_list("expand")
@@ -213,7 +225,7 @@ def test_real_sdk_http_requests_override_explicit_none_and_keep_hooks(monkeypatc
         client.close()
 
 
-def test_request_budget_stops_sdk_retry_after_timeout(monkeypatch):
+def test_request_budget_stops_sdk_retry_after_timeout(monkeypatch, isolated_hub_http):
     from huggingface_hub import HfApi
     from huggingface_hub.utils import httpx
     from huggingface_hub.utils import _http

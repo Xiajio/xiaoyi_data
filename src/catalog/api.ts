@@ -74,8 +74,10 @@ export interface QaCitation { source_id: string; quote: string }
 export interface QaTurn { id: Id; conversation_id: Id; question: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; stage: string; answer: { claims: { text: string; citations: QaCitation[] }[]; uncertainty: string[] } | null; sources: QaSource[]; model: string | null; usage: Record<string, number>; model_calls: number; tool_calls: number; error: string | null; created_at: string; finished_at: string | null }
 export interface QaConversationDetail extends QaConversation { turns: QaTurn[] }
 export interface AgentSummaryBoard {
-  counts: Record<'generating' | 'candidate' | 'confirmed' | 'corrected' | 'failed', number>;
-  queue: { id: Id; dataset: string; dataset_id: Id; dataset_version_id: Id; position: number; attempts: number; created_at: string | null; updated_at: string | null }[];
+  as_of: string;
+  counts: Record<'generating' | 'running' | 'queued' | 'candidate' | 'confirmed' | 'corrected' | 'failed', number>;
+  running: { id: Id; dataset: string; dataset_id: Id; dataset_version_id: Id; attempts: number; started_at: string }[];
+  queue: { id: Id; dataset: string; dataset_id: Id; dataset_version_id: Id; position: number; attempts: number; error?: string; created_at: string | null; updated_at: string | null }[];
   recent: { id: Id; dataset: string; dataset_version_id: Id; status: string; claims: number; demoted: number; model: string; tokens: number; updated_at: string | null }[];
   failed: { id: Id; dataset: string; dataset_version_id: Id; attempts: number; error: string; updated_at: string | null }[];
 }

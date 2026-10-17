@@ -99,7 +99,7 @@ def run_once(engine, *, owner: str | None = None, llm=None, adapter_factory=None
             worked = bool(process_next_qa(engine, llm=llm, guard=heartbeat.check))
             heartbeat.check()
             from .summary_runtime import process_next_summary
-            worked = bool(process_next_summary(engine, llm=llm, guard=heartbeat.check)) or worked
+            worked = bool(process_next_summary(engine, llm=llm, guard=heartbeat.check, owner=owner)) or worked
             heartbeat.check()
             from .collection_runtime import tick_collection_schedules, process_next_collection
             tick_collection_schedules(engine)

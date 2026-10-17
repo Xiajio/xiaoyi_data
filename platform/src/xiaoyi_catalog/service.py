@@ -209,14 +209,19 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
     @app.get("/api/agent-summaries")
     def agent_summaries() -> dict:
         """智能体总结运行看板：当前处理/排队、状态统计、最近完成与失败（只读）。"""
-        from .summary_runtime import PRODUCER_PREFIX
+        from .summary_runtime import PRODUCER_PREFIX, active_summary_executions
         with session_scope(engine) as session:
             base = select(Enrichment, Dataset.source_key).join(Dataset, Dataset.id == Enrichment.dataset_id).where(
                 Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"))
             counts = dict(session.execute(select(Enrichment.status, func.count()).where(
                 Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"))
                 .group_by(Enrichment.status)).all())
-            queue_rows = session.execute(base.where(Enrichment.status == "generating")
+            observed_at = utcnow()
+            running_rows = active_summary_executions(session, now=observed_at)
+            running_ids = [en.id for en in running_rows]
+            names = dict(session.execute(select(Dataset.id, Dataset.source_key).where(
+                Dataset.id.in_([en.dataset_id for en in running_rows]))).all()) if running_rows else {}
+            queue_rows = session.execute(base.where(Enrichment.status == "generating", Enrichment.id.not_in(running_ids))
                                          .order_by(Enrichment.id).limit(50)).all()
             recent_rows = session.execute(base.where(Enrichment.status.in_(["candidate", "confirmed", "corrected"]))
                                           .order_by(Enrichment.updated_at.desc()).limit(15)).all()
@@ -224,10 +229,16 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
                                           .order_by(Enrichment.updated_at.desc()).limit(10)).all()
             iso = lambda value: value.isoformat() if value else None
             return {
-                "counts": {key: counts.get(key, 0) for key in ("generating", "candidate", "confirmed", "corrected", "failed")},
+                "as_of": iso(observed_at),
+                "counts": {**{key: counts.get(key, 0) for key in ("generating", "candidate", "confirmed", "corrected", "failed")},
+                           "running": len(running_rows), "queued": max(0, counts.get("generating", 0) - len(running_rows))},
+                "running": [{"id": en.id, "dataset": names[en.dataset_id], "dataset_id": en.dataset_id,
+                             "dataset_version_id": en.dataset_version_id, "attempts": int(en.value.get("attempts", 0)),
+                             "started_at": en.value["execution"]["started_at"]} for en in running_rows],
                 "queue": [{"id": en.id, "dataset": key, "dataset_id": en.dataset_id,
                            "dataset_version_id": en.dataset_version_id, "position": index + 1,
                            "attempts": int((en.value or {}).get("attempts", 0)),
+                           "error": str((en.value or {}).get("error", ""))[:300],
                            "created_at": iso(en.created_at), "updated_at": iso(en.updated_at)}
                           for index, (en, key) in enumerate(queue_rows)],
                 "recent": [{"id": en.id, "dataset": key, "dataset_version_id": en.dataset_version_id, "status": en.status,

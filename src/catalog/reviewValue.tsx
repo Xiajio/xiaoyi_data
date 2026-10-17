@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { CircleAlert, Download, FileText, Hash, Heart, Layers, Quote, ShieldCheck, Table2 } from 'lucide-react';
-import type { DatasetItem, EnrichmentItem, Id } from './api';
+import type { DatasetItem, EnrichmentItem, Id, VersionItem } from './api';
 import { formatBytes } from './ui';
 
 export type LevelTone = 'good' | 'warn' | 'bad' | '';
@@ -30,7 +30,7 @@ export function truncateVectorValue(value: Record<string, unknown>): Record<stri
 
 const BUILTIN_PATTERNS = ['\\d{4}-\\d{2}-\\d{2}', '\\d[\\d,]{2,}', '(?i:(?:mit|apache-?\\d(?:\\.\\d)?|lgpl|gpl-?[\\d.]*|bsd-?\\d-clause|cc0|cc-by(?:-[a-z]+)*-?\\d(?:\\.\\d)?|odc-by|odbl))'];
 const escapeReg = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-export function buildHighlightTokens(value: Record<string, unknown>, dataset?: DatasetItem | null): string[] {
+export function buildHighlightTokens(value: Record<string, unknown>, dataset?: Partial<DatasetItem> | null): string[] {
   const tokens: string[] = [];
   const push = (token: unknown, min = 2) => { if (typeof token === 'string' && token.trim().length >= min) tokens.push(token.trim()); };
   if (Array.isArray(value.reasons)) for (const reason of value.reasons) {
@@ -48,7 +48,7 @@ export function buildHighlightTokens(value: Record<string, unknown>, dataset?: D
   }
   if (dataset) {
     push(dataset.license, 2);
-    if (dataset.downloads >= 100) push(String(dataset.downloads), 3);
+    if (typeof dataset.downloads === 'number' && dataset.downloads >= 100) push(String(dataset.downloads), 3);
     if (typeof dataset.size_rows === 'number' && dataset.size_rows >= 100) push(String(dataset.size_rows), 3);
   }
   return [...new Set(tokens)].sort((a, b) => b.length - a.length).slice(0, 40);
@@ -85,19 +85,32 @@ export function summarizeSchema(value: Record<string, unknown>): SchemaSummary {
   };
 }
 
+export function reviewVersionMetadata(versions: VersionItem[] | undefined, versionId: Id | undefined): Partial<DatasetItem> | null {
+  if (versionId == null) return null;
+  const version = versions?.find(item => String(item.id) === String(versionId));
+  if (version?.provenance_status !== 'verified' || !version.metadata || !Object.keys(version.metadata).length) return null;
+  return version.metadata;
+}
+
 const LICENSE_LABELS: Record<string, string> = { permissive: '宽松许可', copyleft: '著佐权', 'research-only': '仅限研究', unknown: '许可未知' };
-export function DatasetFacts({ dataset }: { dataset: DatasetItem }) {
-  const licenseTone = dataset.license_class === 'permissive' ? 'good' : dataset.license_class === 'unknown' ? 'warn' : '';
+const countLabel = (value: number | null | undefined) => typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('zh-CN') : '未知';
+export function DatasetFacts({ dataset, versionId }: { dataset: Partial<DatasetItem> | null; versionId?: Id }) {
+  if (!dataset) return <div className="rv-facts" data-testid="review-facts">
+    <p className="rv-facts-title"><CircleAlert size={13} />历史版本未验证 · 版本 #{versionId ?? '待核对'}</p>
+    <p className="muted">未找到可核验的版本元数据，请补充资料后再核对候选。</p>
+  </div>;
+  const licenseClass = dataset.license_class || 'unknown';
+  const licenseTone = licenseClass === 'permissive' ? 'good' : licenseClass === 'unknown' ? 'warn' : '';
   return <div className="rv-facts" data-testid="review-facts">
-    <p className="rv-facts-title"><ShieldCheck size={13} />目录事实 · 来自采集版本，供核对候选理由</p>
+    <p className="rv-facts-title"><ShieldCheck size={13} />版本 #{versionId} 的目录记录 · 来源自报，供核对候选理由</p>
     <dl>
-      <div><dt>许可</dt><dd><span className={`badge ${licenseTone}`}>{LICENSE_LABELS[dataset.license_class] ?? dataset.license_class}{dataset.license ? ` · ${dataset.license}` : ''}</span></dd></div>
-      <div><dt><Download size={11} />下载</dt><dd>{dataset.downloads.toLocaleString('zh-CN')}</dd></div>
-      <div><dt><Heart size={11} />点赞</dt><dd>{dataset.likes.toLocaleString('zh-CN')}</dd></div>
-      <div><dt><Table2 size={11} />规模</dt><dd>{dataset.size_rows == null ? '未知' : `${dataset.size_rows.toLocaleString('zh-CN')} 行`}</dd></div>
-      <div><dt><Layers size={11} />模态</dt><dd>{dataset.modalities.length ? dataset.modalities.join('、') : '未标注'}</dd></div>
-      <div><dt><CircleAlert size={11} />缺失项</dt><dd>{dataset.missing.length ? <span className="badge warn">{dataset.missing.length} 项</span> : <span className="badge good">齐</span>}</dd></div>
-      {dataset.task_categories.length ? <div><dt><FileText size={11} />任务</dt><dd>{dataset.task_categories.slice(0, 3).join('、')}</dd></div> : null}
+      <div><dt>许可</dt><dd><span className={`badge ${licenseTone}`}>{LICENSE_LABELS[licenseClass] ?? licenseClass}{dataset.license ? ` · ${dataset.license}` : ''}</span></dd></div>
+      <div><dt><Download size={11} />下载</dt><dd>{countLabel(dataset.downloads)}</dd></div>
+      <div><dt><Heart size={11} />点赞</dt><dd>{countLabel(dataset.likes)}</dd></div>
+      <div><dt><Table2 size={11} />规模</dt><dd>{dataset.size_rows == null ? '未知' : `${countLabel(dataset.size_rows)} 行`}</dd></div>
+      <div><dt><Layers size={11} />模态</dt><dd>{dataset.modalities?.length ? dataset.modalities.join('、') : '未标注'}</dd></div>
+      <div><dt><CircleAlert size={11} />缺失项</dt><dd>{!dataset.missing ? '未知' : dataset.missing.length ? <span className="badge warn">{dataset.missing.length} 项</span> : <span className="badge good">齐</span>}</dd></div>
+      {dataset.task_categories?.length ? <div><dt><FileText size={11} />任务</dt><dd>{dataset.task_categories.slice(0, 3).join('、')}</dd></div> : null}
     </dl>
   </div>;
 }
