@@ -133,6 +133,9 @@ class Enrichment(Timestamped, Base):
     producer: Mapped[str] = mapped_column(String(128), default="")
     value: Mapped[dict] = mapped_column(JSON, default=dict)
     confidence: Mapped[str] = mapped_column(String(16), default="")
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
+    parent_enrichment_id: Mapped[int | None] = mapped_column(ForeignKey("enrichment.id"), nullable=True, default=None)
+    history_status: Mapped[str] = mapped_column(String(32), default="native")
     evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(16), default="candidate", index=True)
 
@@ -192,6 +195,10 @@ class Review(Base):
     target_kind: Mapped[str] = mapped_column(String(16), index=True)
     target_id: Mapped[int] = mapped_column(Integer, index=True)
     decision: Mapped[str] = mapped_column(String(16))
+    target_content_hash: Mapped[str] = mapped_column(String(64), default="")
+    target_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    history_status: Mapped[str] = mapped_column(String(32), default="native")
+    resulting_enrichment_id: Mapped[int | None] = mapped_column(ForeignKey("enrichment.id"), nullable=True, default=None)
     note: Mapped[str] = mapped_column(Text, default="")
     role: Mapped[str] = mapped_column(String(32), default="reviewer")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -241,3 +248,39 @@ def _immutable_version(_mapper, _connection, target):
             return
     if changed:
         raise ValueError("Captured dataset versions are immutable; collect a new revision")
+
+
+@event.listens_for(Enrichment, "before_insert")
+def _seal_new_enrichment(_mapper, _connection, target):
+    from .trust import seal_enrichment
+    seal_enrichment(target)
+
+
+@event.listens_for(Enrichment, "before_update")
+def _immutable_enrichment(_mapper, connection, target):
+    from sqlalchemy import select
+    from .trust import enrichment_content, content_hash, seal_enrichment
+    from types import SimpleNamespace
+    prior = connection.execute(select(Enrichment.__table__).where(Enrichment.id == target.id)).mappings().one()
+    previous = prior["content_hash"]
+    expected = previous or (content_hash(enrichment_content(SimpleNamespace(**prior))) if prior["status"] != "generating" else "")
+    if expected and (content_hash(enrichment_content(target)) != expected or (previous and target.content_hash != previous)):
+        raise ValueError("Generated content is immutable; create a new enrichment revision")
+    seal_enrichment(target)
+
+
+@event.listens_for(Enrichment, "before_delete")
+def _keep_enrichment_history(*_args):
+    raise ValueError("Enrichment history must be retained")
+
+
+@event.listens_for(Review, "before_insert")
+def _bind_review(_mapper, _connection, target):
+    from .trust import bind_review
+    bind_review(object_session(target), target)
+
+
+@event.listens_for(Review, "before_update")
+@event.listens_for(Review, "before_delete")
+def _keep_review_history(*_args):
+    raise ValueError("Review records are immutable")

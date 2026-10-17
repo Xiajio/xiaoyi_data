@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         env:
           POSTGRES_USER: catalog
           POSTGRES_PASSWORD: catalog-test-only
@@ -23,9 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -e "./platform[dev]"
+      - run: python -m pip install --require-hashes -r platform/requirements.lock
+      - run: python -m pip install --no-deps --no-build-isolation -e ./platform
       - run: python -m pytest platform/tests -q
-      - run: python -m pytest platform/tests/test_postgres.py -q
+      - name: Real PostgreSQL and SQLite-to-PostgreSQL migration
+        run: python -m pytest platform/tests/test_postgres.py platform/tests/test_operations.py -q
         env:
           XIAOYI_TEST_POSTGRES: postgresql+psycopg://catalog:catalog-test-only@localhost:5432/catalog
       - run: npm ci
@@ -39,3 +41,46 @@ jobs:
             dist/
             playwright-report/
           retention-days: 7
+
+  compose-and-recovery:
+    runs-on: ubuntu-latest
+    needs: check
+    env:
+      POSTGRES_PASSWORD: ci-disposable-only
+      XIAOYI_RELEASE: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare disposable volume mounts
+        run: |
+          mkdir -p data/import backups recovery
+          sudo chown -R 10001:10001 data/import backups recovery
+      - name: Build pinned application and operations images
+        run: docker compose --profile ops build
+      - name: Validate full deployment and separate queues
+        run: |
+          docker compose config --quiet
+          docker compose up -d --wait --wait-timeout 180
+          curl --fail http://127.0.0.1:8080/api/ready
+          docker compose exec -T api python -m xiaoyi_catalog.operations worker-health --queue interactive
+          docker compose exec -T api python -m xiaoyi_catalog.operations worker-health --queue io
+          docker compose exec -T api python -m xiaoyi_catalog.operations worker-health --queue cpu
+      - name: Real PG16 backup, restore and checkpoint resume
+        run: |
+          docker compose run --rm ops pg_dump --version
+          docker compose run --rm ops pg_restore --version
+          docker compose run --rm ops python -m xiaoyi_catalog.operations_drill --destination /recovery/ci-drill
+      - name: Capture deployment logs
+        if: always()
+        run: |
+          mkdir -p output
+          docker compose logs --no-color > output/compose.log
+          sudo cp recovery/ci-drill/drill-report.json output/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-recovery-verification
+          path: output/
+          retention-days: 7
+      - name: Remove disposable CI containers and volumes
+        if: always()
+        run: docker compose --profile ops down --volumes --remove-orphans

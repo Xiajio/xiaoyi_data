@@ -10,6 +10,7 @@ export interface DatasetItem {
 export interface EvidenceItem { id: Id; dataset_version_id?: Id; kind: string; location: string; excerpt: string }
 export interface VersionItem { id: Id; revision: string; provenance_status?: string; metadata?: Partial<DatasetItem> }
 export interface EnrichmentItem {
+  content_hash?: string;
   id: Id; dataset?: string; dataset_id: Id; dataset_version_id?: Id; kind: string; producer: string;
   status: string; value: Record<string, unknown>; evidence_ids: Id[];
 }
@@ -119,6 +120,7 @@ export class CatalogApi {
   me() { return this.request<User>('/api/auth/me'); }
   login(username: string, password: string) { return this.post<User>('/api/auth/login', { username, password }); }
   logout() { return this.post<void>('/api/auth/logout'); }
+  operations() { return this.request<OperationsSnapshot>('/api/operations'); }
   overview() { return this.request<OverviewStats>('/api/overview'); }
   dashboard(days: 14 | 30 = 14) { return this.request<CatalogDashboard>(`/api/overview/dashboard?days=${days}`); }
   qaCapabilities() { return this.request<QaCapabilities>('/api/qa-capabilities'); }
@@ -139,14 +141,39 @@ export class CatalogApi {
   dataset(id: Id) { return this.request<{ dataset: DatasetItem; evidence: EvidenceItem[]; enrichments: EnrichmentItem[]; versions: VersionItem[] }>(`/api/datasets/${pathId(id)}`); }
   registerDataset(data: ManualDataset) { return this.post<{ id: Id; dataset_version_id?: Id }>('/api/datasets/register', data); }
   enrichmentQueue(status = 'candidate', kind = '') { return this.request<{ items: EnrichmentItem[] }>(`/api/review/enrichments?status=${encodeURIComponent(status)}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`); }
-  reviewEnrichment(id: Id, decision: ReviewDecision, note: string, value?: Record<string, unknown>) { return this.post<{ id: Id; status: string }>(`/api/review/enrichments/${pathId(id)}`, { decision, note, ...(value ? { value } : {}) }); }
+  reviewEnrichment(id: Id, decision: ReviewDecision, note: string, value?: Record<string, unknown>, contentHash?: string) { return this.post<{ id: Id; status: string }>(`/api/review/enrichments/${pathId(id)}`, { decision, note, ...(value ? { value } : {}), ...(contentHash ? { expected_content_hash: contentHash } : {}) }); }
   pairings(status = '') { return this.request<{ items: PairingItem[] }>(`/api/pairings${status ? `?status=${encodeURIComponent(status)}` : ''}`); }
   reviewPairing(id: Id, decision: 'confirmed' | 'rejected', note: string) { return this.post<{ id: Id; status: string }>(`/api/pairings/${pathId(id)}/review`, { decision, note }); }
   ideas() { return this.request<{ items: IdeaItem[] }>('/api/ideas'); }
   freeze(ideaExternalId: string, note: string) { return this.post<SnapshotItem>('/api/snapshots/freeze', { idea_external_id: ideaExternalId, note }); }
   approve(snapshotId: Id) { return this.post<SnapshotItem>(`/api/snapshots/${pathId(snapshotId)}/approve`); }
   exportSnapshot(snapshotId: Id) { return this.request<Record<string, unknown>>(`/api/snapshots/${pathId(snapshotId)}/export`); }
-  async bundle(snapshotId: Id) { return (await this.response(`/api/snapshots/${pathId(snapshotId)}/bundle`)).blob(); }
+  async bundle(snapshotId: Id) {
+    try { return (await this.response(`/api/snapshots/${pathId(snapshotId)}/bundle`)).blob(); }
+    catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 409) throw error;
+      const job = await this.submitJob('bundle.build', { snapshot_id: Number(snapshotId) });
+      throw new Error(`研究包任务 #${job.job_id} 已排队，可在数据构建页查看进度；完成后再次下载。`);
+    }
+  }
+  submitJob(kind: string, payload: Record<string, unknown>) { return this.post<BackgroundJob>('/api/jobs', { kind, payload }); }
+  jobs(afterId: Id = 0) { return this.request<{ items: BackgroundJob[] }>(`/api/jobs?after_id=${pathId(afterId)}&limit=100&order=desc`); }
+  job(id: Id) { return this.request<BackgroundJob>(`/api/jobs/${pathId(id)}`); }
+  async jobArtifact(id: Id) { return (await this.response(`/api/jobs/${pathId(id)}/artifact`)).blob(); }
+  cancelJob(id: Id) { return this.post<BackgroundJob>(`/api/jobs/${pathId(id)}/cancel`); }
+  retryJob(id: Id) { return this.post<BackgroundJob>(`/api/jobs/${pathId(id)}/retry`); }
+  builds() { return this.request<{ items: DatasetBuild[] }>('/api/builds?order=desc&limit=100'); }
+  createBuild(recipe: Record<string, unknown>) { return this.post<{ build_id: Id; job_id: Id }>('/api/builds', { recipe }); }
+  buildManifest(id: Id) { return this.request<Record<string, unknown>>(`/api/builds/${pathId(id)}/manifest`); }
+  buildProfiles(id: Id) { return this.request<{ items: Record<string, unknown>[] }>(`/api/builds/${pathId(id)}/profiles`); }
+  publishBuild(id: Id, manifestHash: string) { return this.post<DatasetBuild>(`/api/builds/${pathId(id)}/publish`, { manifest_hash: manifestHash }); }
+  mineBuild(id: Id) { return this.post<{ job_id: Id }>(`/api/builds/${pathId(id)}/mining`, { build_id: Number(id) }); }
+
+  experiments() { return this.request<{ items: ExperimentItem[] }>('/api/experiments?order=desc&limit=100'); }
+  importExperiment(value: Record<string, unknown>) { return this.post<{ experiment_id: Id; job_id: Id }>('/api/experiments/import', value); }
+  compareExperiments(ids: Id[]) { return this.post<Record<string, unknown>>('/api/experiments/compare', { experiment_ids: ids.map(Number) }); }
+  async experimentErrors(id: Id) { return (await this.response(`/api/experiments/${pathId(id)}/errors`)).blob(); }
+
   runs() { return this.request<{ items: RunItem[] }>('/api/runs'); }
   audit() { return this.request<{ items: AuditItem[] }>('/api/audit'); }
   agentRuns() { return this.request<{ items: AgentRun[] }>('/api/agent-runs'); }
@@ -171,4 +198,21 @@ export class CatalogApi {
   versionFiles(id: Id) { return this.request<{ items: { path: string; size: number | null }[]; revision: string }>(`/api/dataset-versions/${pathId(id)}/files`); }
   previewAsset(id: Id) { return this.request<AssetPreview>(`/api/assets/${pathId(id)}/preview`); }
   assets(id: Id) { return this.request<{ items: Asset[]; reports: AssetReport[]; overlap?: unknown[] }>(`/api/dataset-versions/${pathId(id)}/assets`); }
+}
+
+export interface BackgroundJob { id: Id; job_id: Id; kind: string; queue: string; status: string; attempts: number; error: string; result: Record<string, unknown>; progress: Record<string, unknown>; cancel_requested: boolean }
+export interface DatasetBuild { id: Id; status: string; recipe: Record<string, unknown>; manifest_hash: string; sample_count: number; approved_by: string; error: string }
+
+export interface ExperimentItem { id: Id; build_id: Id; status: string; model: { name: string; version: string; training_budget: string; seed: number }; protocol: { evaluation_build_id: Id; split: string }; metrics: { accuracy?: number; error_count?: number; coverage?: number }; error: string }
+
+export interface QueueMetrics {
+  queued: number; waiting: number; delayed: number; running: number; failed: number;
+  succeeded: number; cancelled: number; expired_running: number; oldest_wait_seconds: number | null;
+  heartbeat: { healthy: boolean; active_workers: number; last_seen_at: string | null };
+}
+export interface OperationsSnapshot {
+  as_of: string; tasks: Record<string, number>; downloads: Record<string, number>;
+  review_backlog: number; asset_bytes: number; disk_free_bytes: number;
+  queues: Record<'interactive' | 'io' | 'cpu', QueueMetrics>;
+  approval_waiting: { research_runs: number; download_requests: number };
 }

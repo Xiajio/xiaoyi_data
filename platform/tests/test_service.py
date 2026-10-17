@@ -122,7 +122,7 @@ class TestAgentEndpoints:
     def test_match_filters_by_requirements_and_degrades_without_embedder(self, client):
         response = client.post("/api/match", json={"requirements": {"modalities": ["text"]}, "query": "情感"})
         payload = response.json()
-        assert response.status_code == 200 and payload["ranking"] == "downloads"  # 服务默认不启用嵌入模型
+        assert response.status_code == 200 and payload["ranking"] == "keyword"  # 无模型仍执行关键词检索
         assert [item["source_key"] for item in payload["results"]] == ["a/zh-sentiment"]
         empty = client.post("/api/match", json={"requirements": {"modalities": ["3d"]}}).json()
         assert empty["results"] == []

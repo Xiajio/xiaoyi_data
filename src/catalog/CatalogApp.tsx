@@ -9,11 +9,13 @@ import { QaPanel } from './QaPanel';
 import { HfCollectionPage } from './HfCollectionPage';
 import { OverviewPage, type DatasetFilter } from './OverviewPage';
 import { DownloadsPage } from './Assets';
+import { QueueHealth } from './QueueHealth';
+import { DataEnginePage } from './DataEnginePage';
 import { ManualRegister } from './ManualRegister';
 import '../components/pages.css';
 import './catalog.css';
 
-type PageId = 'overview' | 'collection' | 'research' | 'datasets' | 'review' | 'downloads' | 'publish' | 'ops';
+type PageId = 'overview' | 'collection' | 'research' | 'datasets' | 'review' | 'downloads' | 'publish' | 'builds' | 'ops';
 const ROLE_LABELS: Record<Role, string> = { reader: '只读成员', researcher: '研究员', reviewer: '审核员', admin: '管理员' };
 const LICENSE_LABELS: Record<string, string> = { permissive: '宽松许可', copyleft: '著佐权', 'research-only': '仅限研究', unknown: '许可未知' };
 const KIND_ICON = { text: FileText, table: Table2, image: Image, '3d': Box } as Record<string, typeof FileText>;
@@ -176,6 +178,7 @@ function OpsPage({ api, role, go, onToast }: { api: CatalogApi; role: Role; go: 
   const active = tab === 'runs' ? runs : audit;
   return <>
     <header className="pp-heading"><div><h1>运行与审计</h1><p className="muted pp-subtitle">智能体总结进度、采集任务与操作留痕；本地记录，不具备不可篡改能力。</p></div></header>
+    {canReview(role) && <QueueHealth api={api} />}
     <div className="pp-tabs cat-tabs">{[['summaries', '智能体总结'], ['runs', '采集任务'], ['audit', '操作审计']].map(([id, label]) => <button key={id} className={tab === id ? 'is-active' : ''} onClick={() => setTab(id as 'summaries' | 'runs' | 'audit')}>{label}</button>)}</div>
     {tab === 'summaries' ? <SummaryBoard api={api} role={role} go={go} onToast={onToast} /> : <>
     <LoadState loading={active.loading} error={active.error} onRetry={active.reload} />
@@ -207,7 +210,7 @@ export function CatalogApp({ api }: { api: CatalogApi }) {
   const pages = useMemo(() => [
     { id: 'overview' as PageId, label: '工作概览', icon: LayoutDashboard }, { id: 'research' as PageId, label: '科研任务', icon: FlaskConical },
     { id: 'collection' as PageId, label: 'HF 采集', icon: Download }, { id: 'datasets' as PageId, label: '数据目录', icon: Database }, { id: 'review' as PageId, label: '整理核验', icon: ShieldCheck },
-    { id: 'downloads' as PageId, label: '下载管理', icon: Download }, { id: 'publish' as PageId, label: '配对与发布', icon: SquareStack }, { id: 'ops' as PageId, label: '运行与审计', icon: Activity },
+    { id: 'downloads' as PageId, label: '下载管理', icon: Download }, { id: 'builds' as PageId, label: '数据构建', icon: Table2 }, { id: 'publish' as PageId, label: '配对与发布', icon: SquareStack }, { id: 'ops' as PageId, label: '运行与审计', icon: Activity },
   ], []);
   const go = (next: PageId) => { if (next === 'datasets') setDirectoryFilter({}); setPage(next); setNavOpen(false); window.scrollTo(0, 0); };
   const openDirectory = (filter: DatasetFilter) => { setDirectoryFilter(filter); setPage('datasets'); setNavOpen(false); window.scrollTo(0, 0); };
@@ -220,7 +223,7 @@ export function CatalogApp({ api }: { api: CatalogApi }) {
       <div className="sidebar-bottom"><div className="local-indicator"><i />团队目录服务</div><p>候选有证据<br />数据有版本</p><a href="?mode=demo">打开合成演示 <ArrowRight size={13} /></a></div></aside>
     <div className="main-shell"><header className="topbar"><div className="breadcrumb"><button className="btn icon nav-toggle" aria-label="切换导航" aria-expanded={navOpen} aria-controls="catalog-navigation" onClick={() => setNavOpen(!navOpen)}><Menu size={18} /></button><span>科研数据</span><span className="crumb-slash">/</span><strong>{pages.find(item => item.id === page)?.label}</strong></div><div className="top-actions"><button className="btn quiet cat-qa-toggle" aria-label="数据问答" aria-expanded={qaOpen} aria-controls="catalog-qa-panel" onClick={() => { setQaMounted(true); setQaOpen(value => !value); }}><MessageSquare size={15} /><span>数据问答</span></button><span className="cat-identity">{user.username}<span className="badge">{ROLE_LABELS[user.role]}</span></span><button className="btn quiet" onClick={async () => { try { await api.logout(); setUser(null); setPage('overview'); } catch (reason) { setToast(errorText(reason)); } }}>退出登录</button><button className="btn icon" aria-label={theme === 'light' ? '切换深色主题' : '切换浅色主题'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button></div></header>
       <div className="demo-strip"><span className="demo-tag">团队目录</span><span>智能整理 · 人工核验 · 版本留存</span><span className="demo-strip-detail">当前权限由团队账号确定</span></div>
-      <main className="workspace-content" id="catalog-content" tabIndex={-1}>{page === 'overview' && <OverviewPage api={api} go={go} onDirectory={openDirectory} />}{page === 'collection' && <HfCollectionPage api={api} user={user} onToast={setToast} onDirectory={() => go('datasets')} onReview={() => go('review')} />}{page === 'research' && <ResearchPage api={api} role={user.role} onToast={setToast} />}{page === 'datasets' && <DatasetsPage key={JSON.stringify(directoryFilter)} api={api} role={user.role} onToast={setToast} initialFilter={directoryFilter} />}{page === 'review' && <ReviewPage api={api} role={user.role} onToast={setToast} />}{page === 'downloads' && <DownloadsPage api={api} role={user.role} onToast={setToast} />}{page === 'publish' && <PublishPage api={api} role={user.role} onToast={setToast} />}{page === 'ops' && <OpsPage api={api} role={user.role} go={go} onToast={setToast} />}</main>
+      <main className="workspace-content" id="catalog-content" tabIndex={-1}>{page === 'overview' && <OverviewPage api={api} go={go} onDirectory={openDirectory} />}{page === 'collection' && <HfCollectionPage api={api} user={user} onToast={setToast} onDirectory={() => go('datasets')} onReview={() => go('review')} />}{page === 'research' && <ResearchPage api={api} role={user.role} onToast={setToast} />}{page === 'datasets' && <DatasetsPage key={JSON.stringify(directoryFilter)} api={api} role={user.role} onToast={setToast} initialFilter={directoryFilter} />}{page === 'review' && <ReviewPage api={api} role={user.role} onToast={setToast} />}{page === 'downloads' && <DownloadsPage api={api} role={user.role} onToast={setToast} />}{page === 'publish' && <PublishPage api={api} role={user.role} onToast={setToast} />}{page === 'builds' && <DataEnginePage api={api} role={user.role} kind={user.kind} onToast={setToast} />}{page === 'ops' && <OpsPage api={api} role={user.role} go={go} onToast={setToast} />}</main>
       <footer className="workspace-footer"><span>小亿数据 · 科研工作区</span><span>人工核验与审批均在服务端留痕</span></footer></div>{qaMounted && <QaPanel api={api} open={qaOpen} onClose={() => setQaOpen(false)} />}<div className={`toast ${toast ? 'visible' : ''}`} role="status" aria-live="polite">{toast}</div>
   </div>;
 }

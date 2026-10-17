@@ -126,26 +126,44 @@ def run_once(engine, *, owner: str | None = None, llm=None, adapter_factory=None
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="小亿科研数据后台 worker")
-    parser.add_argument("--db", default=os.getenv("XIAOYI_CATALOG_DB") or os.getenv("XIAOYI_DATABASE_URL") or os.getenv("DATABASE_URL") or os.getenv("XIAOYI_DB", "data/catalog.db"))
-    parser.add_argument("--once", action="store_true", help="处理一个问答、到期计划、一个采集任务、一个智能体任务和一个已批准下载后退出")
+    from contextlib import ExitStack
+    from .operations import WorkerHeartbeat, assert_schema_current
+    from .jobs import run_queue_once
+    from .collection_runtime import tick_collection_schedules
+    parser = argparse.ArgumentParser(description="小亿数据按资源领取任务的后台 worker")
+    parser.add_argument("--db", default=os.getenv("XIAOYI_CATALOG_DB", "data/catalog.db"))
+    parser.add_argument("--queue", choices=["interactive","io","cpu","all"], default="all")
+    parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=3.0)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     engine = create_engine_for(args.db)
-    init_db(engine)
+    if os.getenv("XIAOYI_AUTO_MIGRATE", "1" if engine.dialect.name == "sqlite" else "0") == "1":
+        init_db(engine)
+    else:
+        assert_schema_current(engine)
+    queues = ["interactive","io","cpu"] if args.queue == "all" else [args.queue]
     owner = uuid.uuid4().hex
     try:
-        while True:
-            try:
-                worked = run_once(engine, owner=owner)
-            except Exception:
-                log.exception("Worker iteration failed; durable work will resume on the next iteration")
+        with ExitStack() as stack:
+            for queue in queues:
+                stack.enter_context(WorkerHeartbeat(engine,queue,f"{owner}:{queue}"))
+            while True:
                 worked = False
-            if args.once:
-                return 0
-            if not worked:
-                time.sleep(max(0.2, args.poll_seconds))
+                for queue in queues:
+                    try:
+                        if queue == "io" and os.getenv("XIAOYI_SCHEDULES_ENABLED", "1") == "1":
+                            tick_collection_schedules(engine)
+                        if queue == "interactive":
+                            with session_scope(engine) as session:
+                                reconcile_reviews(session)
+                        worked = run_queue_once(engine, queue, owner=f"{owner}:{queue}") or worked
+                    except Exception:
+                        log.exception("Worker iteration failed; durable tasks remain recoverable")
+                if args.once:
+                    return 0
+                if not worked:
+                    time.sleep(max(0.2,args.poll_seconds))
     except KeyboardInterrupt:
         return 0
     finally:

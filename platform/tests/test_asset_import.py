@@ -162,11 +162,22 @@ def test_import_cli_requires_human_identity_and_runs_real_commands(local_data, m
     approve(engine,ident)
     capsys.readouterr()
     assert main(["--db",db,"import","--request",str(ident),"--files",str(mapping)]) == 0
+    import_job=json.loads(capsys.readouterr().out)
+    from xiaoyi_catalog.jobs import run_queue_once
+    from xiaoyi_catalog.models_jobs import Job
+    assert run_queue_once(engine,"io")
+    with session_scope(engine) as session:
+        assert session.get(Job,import_job["job_id"]).status=="succeeded"
     with session_scope(engine) as session:
         asset_id = session.scalar(select(Asset.id))
     capsys.readouterr()
     assert main(["--db",db,"derive","--asset",str(asset_id)]) == 0
-    result = json.loads(capsys.readouterr().out)
+    derive_job = json.loads(capsys.readouterr().out)
+    assert run_queue_once(engine,"cpu")
+    with session_scope(engine) as session:
+        job=session.get(Job,derive_job["job_id"])
+        assert job.status=="succeeded",job.error
+        result=job.result
     assert result["origin"] == "derived" and result["dataset_version_id"] != version
 
 
@@ -187,3 +198,77 @@ def test_derived_input_can_be_reviewed_and_exported_with_lineage(local_data):
             manifest = json.loads(bundle.read("manifest.json"))
             assert manifest["assets"][0]["origin"] == "derived"
             assert manifest["assets"][0]["recipe"]["inputs"][0]["asset_id"] == parent_id
+
+
+def test_async_derivation_computes_outside_db_transaction_and_reuses_receipt(local_data,monkeypatch):
+    from xiaoyi_catalog.asset_import import execute_derive
+    from xiaoyi_catalog import derivation
+    from xiaoyi_catalog.jobs import enqueue,claim,Guard
+    from xiaoyi_catalog.models_jobs import Artifact
+    from xiaoyi_catalog.models_samples import ProfileRun
+    from sqlalchemy import func
+    engine,version,inbox,storage,path=local_data
+    _,parent_id=import_ready(local_data)
+    with session_scope(engine) as session:
+        job=enqueue(session,"asset.derive",{"asset_id":parent_id,"operation":"deduplicate"},"reviewer");jid=job.id
+    job=claim(engine,"cpu","derive-fixture");guard=Guard(engine,job)
+    original=derivation._compute
+    calls=[]
+    def compute(state,guard=None):
+        assert engine.pool.checkedout()==0
+        calls.append(True)
+        return original(state,guard)
+    monkeypatch.setattr(derivation,"_compute",compute)
+    first=execute_derive(engine,parent_id,guard=guard,actor="reviewer")
+    second=execute_derive(engine,parent_id,guard=guard,actor="reviewer")
+    assert first==second and len(calls)==1
+    assert (storage/("sha256/"+first["sha256"][:2]+"/"+first["sha256"])).read_bytes()==b"text\nx\ny\n"
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count()).select_from(Asset))==2
+        assert session.scalar(select(func.count()).select_from(ProfileRun))==1
+        assert session.scalar(select(Artifact).where(Artifact.job_id==jid)).manifest==first
+
+
+def test_async_derivation_lost_lease_cannot_publish(local_data,monkeypatch):
+    from xiaoyi_catalog.asset_import import execute_derive
+    from xiaoyi_catalog import derivation
+    from xiaoyi_catalog.agent_runtime import LeaseLost
+    from sqlalchemy import func
+    engine,_,_,_,_=local_data
+    _,parent_id=import_ready(local_data)
+    lost=False
+    def guard(session=None):
+        if lost:raise LeaseLost("fixture lease lost")
+    original=derivation._compute
+    def compute(state,guard=None):
+        nonlocal lost
+        result=original(state,guard)
+        lost=True
+        return result
+    monkeypatch.setattr(derivation,"_compute",compute)
+    with pytest.raises(LeaseLost):execute_derive(engine,parent_id,guard=guard)
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count()).select_from(Asset))==1
+        assert session.scalar(select(func.count()).select_from(DatasetVersion).where(DatasetVersion.kind=="derived"))==0
+
+
+def test_async_derivation_disk_failure_and_corrupt_input_publish_nothing(local_data,monkeypatch):
+    import errno
+    from sqlalchemy import func
+    from xiaoyi_catalog.asset_import import execute_derive
+    from xiaoyi_catalog import derivation
+    engine,_,_,storage,_=local_data
+    _,parent_id=import_ready(local_data)
+    original=derivation.store_file
+    def full(*args,**kwargs):raise OSError(errno.ENOSPC,"fixture disk full")
+    monkeypatch.setattr(derivation,"store_file",full)
+    with pytest.raises(OSError,match="disk full"):execute_derive(engine,parent_id)
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count()).select_from(Asset))==1
+        parent=session.get(Asset,parent_id)
+        source=storage/parent.storage_key
+    monkeypatch.setattr(derivation,"store_file",original)
+    source.write_bytes(b"corrupt")
+    with pytest.raises(DownloadError,match="校验"):execute_derive(engine,parent_id)
+    with session_scope(engine) as session:
+        assert session.scalar(select(func.count()).select_from(DatasetVersion).where(DatasetVersion.kind=="derived"))==0

@@ -1,0 +1,175 @@
+{
+  "evidence": "synthetic acceptance fixture; no claim of real research gains",
+  "seed": 42,
+  "evaluation_build_id": 1,
+  "evaluation_manifest_hash": "0df22694fff382ffa6d670eb6c905e8cf4ad514dd8b12f22e92d1710ea751475",
+  "inputs": [
+    {
+      "path": "training.jsonl",
+      "sha256": "958b9b91797b4d9166b16bd7a7a8ca1b75e8c12e3579048390a9506889ffc772"
+    },
+    {
+      "path": "evaluation.jsonl",
+      "sha256": "8a8daafba9e9a1d277990074052e42c49a538d7078330e3def733e6eb698b3a9"
+    }
+  ],
+  "runs": [
+    {
+      "configuration": "raw",
+      "build_id": 2,
+      "manifest_hash": "c9d033b9847af2e299b321251264fce3742275925f742e79644aac51c3655a7b",
+      "training_samples": 80,
+      "counts": {
+        "input_rows": 156,
+        "before_selection": 156,
+        "output_rows": 156
+      },
+      "metrics": {
+        "accuracy": 0.5,
+        "correct": 20,
+        "predictions": 40,
+        "expected_samples": 40,
+        "coverage": 1.0,
+        "error_count": 20,
+        "producer": "classification-exact-match/1"
+      },
+      "seconds": 0.15219349999824772
+    },
+    {
+      "configuration": "cleaned",
+      "build_id": 3,
+      "manifest_hash": "5c991663864f54fb00a41716002b7540acff74ffa42dd42fbff6853e196568f3",
+      "training_samples": 80,
+      "counts": {
+        "input_rows": 156,
+        "invalid_rows": 12,
+        "before_selection": 144,
+        "output_rows": 144
+      },
+      "metrics": {
+        "accuracy": 1.0,
+        "correct": 40,
+        "predictions": 40,
+        "expected_samples": 40,
+        "coverage": 1.0,
+        "error_count": 0,
+        "producer": "classification-exact-match/1"
+      },
+      "seconds": 0.13868739999452373
+    },
+    {
+      "configuration": "deduplicated",
+      "build_id": 4,
+      "manifest_hash": "dab937cb8f2797c0e11d3cecb5a8b68affa63266aad3cbdcf99e1806791980ec",
+      "training_samples": 80,
+      "counts": {
+        "input_rows": 156,
+        "exact_duplicates": 24,
+        "invalid_rows": 12,
+        "before_selection": 120,
+        "output_rows": 120
+      },
+      "metrics": {
+        "accuracy": 1.0,
+        "correct": 40,
+        "predictions": 40,
+        "expected_samples": 40,
+        "coverage": 1.0,
+        "error_count": 0,
+        "producer": "classification-exact-match/1"
+      },
+      "seconds": 0.13047240000014426
+    },
+    {
+      "configuration": "selected",
+      "build_id": 5,
+      "manifest_hash": "04be2906a70efa47c0b599e7b85ea588af095d0d56435542635a771948d99b0f",
+      "training_samples": 80,
+      "counts": {
+        "input_rows": 156,
+        "exact_duplicates": 24,
+        "invalid_rows": 12,
+        "before_selection": 120,
+        "budget_excluded": 40,
+        "output_rows": 80
+      },
+      "metrics": {
+        "accuracy": 1.0,
+        "correct": 40,
+        "predictions": 40,
+        "expected_samples": 40,
+        "coverage": 1.0,
+        "error_count": 0,
+        "producer": "classification-exact-match/1"
+      },
+      "seconds": 0.12336290000530425
+    }
+  ],
+  "comparison": {
+    "baseline_experiment_id": 1,
+    "evaluation_build_hash": "0df22694fff382ffa6d670eb6c905e8cf4ad514dd8b12f22e92d1710ea751475",
+    "items": [
+      {
+        "experiment_id": 1,
+        "build_id": 2,
+        "metrics": {
+          "accuracy": 0.5,
+          "correct": 20,
+          "predictions": 40,
+          "expected_samples": 40,
+          "coverage": 1.0,
+          "error_count": 20,
+          "producer": "classification-exact-match/1"
+        },
+        "accuracy_delta": 0.0
+      },
+      {
+        "experiment_id": 2,
+        "build_id": 3,
+        "metrics": {
+          "accuracy": 1.0,
+          "correct": 40,
+          "predictions": 40,
+          "expected_samples": 40,
+          "coverage": 1.0,
+          "error_count": 0,
+          "producer": "classification-exact-match/1"
+        },
+        "accuracy_delta": 0.5
+      },
+      {
+        "experiment_id": 3,
+        "build_id": 4,
+        "metrics": {
+          "accuracy": 1.0,
+          "correct": 40,
+          "predictions": 40,
+          "expected_samples": 40,
+          "coverage": 1.0,
+          "error_count": 0,
+          "producer": "classification-exact-match/1"
+        },
+        "accuracy_delta": 0.5
+      },
+      {
+        "experiment_id": 4,
+        "build_id": 5,
+        "metrics": {
+          "accuracy": 1.0,
+          "correct": 40,
+          "predictions": 40,
+          "expected_samples": 40,
+          "coverage": 1.0,
+          "error_count": 0,
+          "producer": "classification-exact-match/1"
+        },
+        "accuracy_delta": 0.5
+      }
+    ]
+  },
+  "mining": {
+    "build_id": 2,
+    "findings": 43,
+    "profile_run_id": 6
+  }
+}

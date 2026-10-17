@@ -179,33 +179,20 @@ def _collections(session, args):
 
 
 def _search(session, args):
-    conditions = [Dataset.status == 'active']
-    if args.query.strip():
-        conditions.append(or_(*(column.contains(args.query.strip(), autoescape=True) for column in (Dataset.name, Dataset.source_key, Dataset.card_text))))
-    if args.modality.strip():
-        conditions.append(modality_filter(Dataset.modalities, args.modality, session.bind.dialect.name))
-    if args.license_class.strip():
-        conditions.append(license_filter(Dataset.license_class, args.license_class))
-    if args.source:
-        conditions.append(Dataset.source_id.in_(select(Source.id).where(Source.kind == args.source)))
-    total = int(session.scalar(select(func.count()).select_from(Dataset).where(*conditions)) or 0)
-    columns = (Dataset.id, Dataset.source_key, Dataset.name, Dataset.license, Dataset.license_class,
-        Dataset.modalities, Dataset.languages, Dataset.task_categories, Dataset.size_rows, Dataset.size_bytes, Dataset.first_seen_at)
-    statement = select(*columns).where(*conditions)
-    statement = statement.order_by(Dataset.downloads.desc(), Dataset.id) if args.order == 'downloads' else statement.order_by(Dataset.first_seen_at.desc(), Dataset.id.desc())
-    items = []
-    for row in session.execute(statement.limit(args.limit).offset(args.offset)).mappings():
-        item = dict(row)
-        item['modalities'] = sorted(normalized_modalities(item['modalities']))
-        version = session.execute(select(DatasetVersion.id, DatasetVersion.revision, DatasetVersion.provenance_status)
-            .where(DatasetVersion.dataset_id == row['id'], DatasetVersion.kind == 'source').order_by(DatasetVersion.id.desc()).limit(1)).first()
-        item.update(dataset_version_id=version.id if version else None, revision=version.revision if version else None,
-                    provenance_status=version.provenance_status if version else 'legacy_unverified')
-        items.append(item)
+    from .retrieval import RetrievalService
+    from .search import SearchFilter
+    result = RetrievalService(session).search(SearchFilter(
+        modalities=(args.modality,) if args.modality.strip() else (),
+        license_classes=(args.license_class,) if args.license_class.strip() else (),
+        limit=args.limit, offset=args.offset), query_text=args.query,
+        sources=[args.source] if args.source else None, order=args.order)
     return [_document('catalog_search', '本地目录检索结果', '/api/datasets', {
-        'filters': args.model_dump(), 'matched_total': total, 'returned': len(items), 'items': items,
-        'has_more': total > args.offset + len(items), 'scope': '当前有效目录，名称、来源标识和卡片的关键词匹配；不是互联网搜索。',
-        'note': '结果是当前目录元数据，不是已下载文件证明；科研用途须读取具体版本证据。'})]
+        'filters': args.model_dump(), 'matched_total': result['matched_total'],
+        'returned': len(result['results']), 'items': result['results'], 'has_more': result['has_more'],
+        'total_is_exact': result['total_is_exact'], 'truncated': result['truncated'],
+        'retrieval_version': result['retrieval_version'], 'ranking': result['ranking'],
+        'scope': '当前有效目录的有界关键词召回；不是互联网搜索。',
+        'note': '版本证据只引用对应 source 版本；目录结果不是已下载文件证明。'})]
 
 
 def _dataset(session, args):

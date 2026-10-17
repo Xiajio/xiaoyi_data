@@ -11,6 +11,7 @@ from sqlalchemy import text, select, event
 from xiaoyi_catalog.db import create_engine_for, init_db, session_scope
 from xiaoyi_catalog.models import Dataset, DatasetVersion, VectorEmbedding
 from xiaoyi_catalog.models_runtime import AgentRun
+from xiaoyi_catalog.operations import expected_schema_revision
 from xiaoyi_catalog.agent_runtime import create_run
 from xiaoyi_catalog.collect import collect
 from xiaoyi_catalog.adapters.base import CollectScope
@@ -58,7 +59,7 @@ def test_pg_migrations_versions_vector_and_task(postgres_engine):
     embed_all(engine, embedder)
     with session_scope(engine) as session:
         assert session.scalar(text("SELECT extversion FROM pg_extension WHERE extname='vector'"))
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0006_catalog_qa"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == expected_schema_revision()
         assert session.scalar(text("SELECT pg_typeof(vector)::text FROM vector_embedding LIMIT 1")) == "vector"
         result = match_datasets(session, SearchFilter(modalities=("text",)), query_text="text", embedder=embedder)
         assert result["ranking"] == "structured+cosine"

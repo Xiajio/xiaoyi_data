@@ -288,12 +288,12 @@ def _finish(session, job, status, error="", error_kind=""):
         "failed": "采集失败，可查看原因后重试", "cancelled": "采集已取消"}[status], {"error": error, "error_kind": error_kind})
 
 
-def process_next_collection(engine, *, adapter_factory=None, guard=None):
+def process_next_collection(engine, *, adapter_factory=None, guard=None, job_id=None):
     """Execute one persistent job under the worker lease; each side effect commits with its progress."""
     if guard:
         guard()
     with session_scope(engine) as session:
-        job = session.scalar(select(CollectionJob).where(CollectionJob.status.in_(ACTIVE_STATUSES))
+        job = session.scalar(select(CollectionJob).where(CollectionJob.status.in_(ACTIVE_STATUSES), True if job_id is None else CollectionJob.id == job_id)
             .order_by((CollectionJob.status == "running").desc(), CollectionJob.id).limit(1))
         if not job:
             return False

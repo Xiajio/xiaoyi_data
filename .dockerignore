@@ -13,3 +13,8 @@ __pycache__
 .playwright-cli/
 platform/build/
 /data/
+
+/backups/
+/recovery/
+.test-runs/
+.test-tmp/

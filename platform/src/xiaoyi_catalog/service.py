@@ -24,6 +24,7 @@ from sqlalchemy import String, cast, func, or_, select
 from .db import create_engine_for, init_db, session_scope
 from .embeddings import SentenceTransformerEmbedder, TextEmbedder
 from .match import match_datasets, requirement_to_filter
+from .trust import enrichment_identity, review_enrichment as decide_enrichment
 from .models import Audit, Dataset, DatasetVersion, Enrichment, Evidence, Idea, Pairing, Review, Run, Snapshot, utcnow
 from .pairing import (PairingError, approve_snapshot, export_snapshot, freeze_snapshot,
                       propose_pairing, review_pairing, snapshot_status)
@@ -41,6 +42,7 @@ class ReviewIn(BaseModel):
     note: str = ""
     role: str = "reviewer"  # Deprecated compatibility input, never used for authority.
     value: dict | None = None
+    expected_content_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class FreezeIn(BaseModel):
@@ -85,7 +87,11 @@ def _write_review(session, target_kind: str, target_id: int, body: ReviewIn, act
 def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> FastAPI:
     path = db_path or os.environ.get("XIAOYI_CATALOG_DB", "./data/catalog.db")
     engine = create_engine_for(path)
-    init_db(engine)
+    from .operations import assert_schema_current
+    if os.getenv("XIAOYI_AUTO_MIGRATE", "1" if engine.dialect.name == "sqlite" else "0") == "1":
+        init_db(engine)
+    else:
+        assert_schema_current(engine)
     @asynccontextmanager
     async def lifespan(_app):
         try:
@@ -99,7 +105,7 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
         raise RuntimeError("DEV_AUTH is only permitted for local SQLite fixtures")
     @app.middleware("http")
     async def authenticated(request: Request, call_next):
-        if request.method == "OPTIONS" or not request.url.path.startswith("/api/") or request.url.path in {"/api/auth/login", "/api/health"}:
+        if request.method == "OPTIONS" or not request.url.path.startswith("/api/") or request.url.path in {"/api/auth/login", "/api/health", "/api/ready"}:
             return await call_next(request)
         try:
             if app.state.dev_auth and request.client and request.client.host not in {"127.0.0.1", "::1", "testclient", "localhost"}:
@@ -261,7 +267,7 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
                 stmt = stmt.where(Enrichment.kind == kind)
             rows = session.execute(stmt.order_by(Enrichment.id.desc()).limit(200)).all()
             return {"items": [{"id": en.id, "dataset": key, "dataset_id": en.dataset_id, "kind": en.kind,
-                               "producer": en.producer, "status": en.status, "value": en.value,
+                               "producer": en.producer, "status": en.status, "value": en.value, **enrichment_identity(en),
                                "evidence_ids": en.evidence_ids, "dataset_version_id": en.dataset_version_id, "evidence": [{"id": e.id, "excerpt": e.excerpt, "location": e.location} for e in session.scalars(select(Evidence).where(Evidence.id.in_(en.evidence_ids)))]} for en, key in rows]}
 
     @app.post("/api/review/enrichments/{enrichment_id}")
@@ -270,22 +276,15 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
             enrichment = session.get(Enrichment, enrichment_id)
             if enrichment is None:
                 raise _404("整理候选", enrichment_id)
-            if enrichment.status == body.decision:
-                raise HTTPException(status_code=400, detail=f"该候选已是 {body.decision} 状态")
             actor = require(request, {"reviewer", "admin"}, human=True)
-            if body.decision in {"corrected", "needs-info", "rejected"} and not body.note.strip():
-                raise HTTPException(400, "更正、待补资料或驳回必须填写说明")
-            if body.decision == "corrected":
-                if body.value is None:
-                    raise HTTPException(400, "更正需要提供结构化值")
-                import json
-                session.add(Audit(actor=actor.username, action="enrichment_corrected",
-                                  detail=json.dumps({"id": enrichment.id, "previous": enrichment.value,
-                                                     "value": body.value, "note": body.note}, ensure_ascii=False)))
-                enrichment.value = body.value
-            enrichment.status = "confirmed" if body.decision == "corrected" else body.decision
-            _write_review(session, "enrichment", enrichment_id, body, actor)
-            return {"id": enrichment.id, "status": enrichment.status}
+            try:
+                result = decide_enrichment(session, enrichment_id, body.decision, actor=actor.username,
+                                           role=actor.role, note=body.note, value=body.value,
+                                           expected_hash=body.expected_content_hash)
+                session.flush()
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return {"id": result.id, "status": result.status, **enrichment_identity(result)}
 
     @app.get("/api/pairings")
     def pairings(status: str = "") -> dict:
@@ -305,10 +304,11 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
     def review_pairing_endpoint(pairing_id: int, body: ReviewIn, request: Request) -> dict:
         with session_scope(engine) as session:
             try:
-                pairing = review_pairing(session, pairing_id, body.decision, body.note)
+                actor = require(request, {"reviewer", "admin"}, human=True)
+                pairing = review_pairing(session, pairing_id, body.decision, body.note,
+                                         actor=actor.username, role=actor.role)
             except PairingError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            _write_review(session, "pairing", pairing_id, body, require(request, {"reviewer", "admin"}, human=True))
             return {"id": pairing.id, "status": pairing.status}
 
     @app.get("/api/ideas")
@@ -329,9 +329,12 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
     @app.post("/api/match")
     def match(body: MatchIn) -> dict:
         """智能体检索：requirements 结构化硬过滤 + query 语义排序（嵌入模型未启用时按下载量）。"""
-        with session_scope(engine) as session:
-            return match_datasets(session, requirement_to_filter(body.requirements),
-                                  query_text=body.query, embedder=service_embedder())
+        try:
+            with session_scope(engine) as session:
+                return match_datasets(session, requirement_to_filter(body.requirements),
+                                      query_text=body.query, embedder=service_embedder())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/pairings", status_code=201)
     def propose(body: ProposeIn) -> dict:
@@ -394,6 +397,10 @@ def create_app(db_path: str | None = None, *, dev_auth: bool | None = None) -> F
                                "created_at": a.created_at.isoformat() if a.created_at else None} for a in items]}
 
     register_platform(app, engine)
+    from .api_jobs import register_jobs
+    from .api_builds import register_builds
+    register_jobs(app, engine)
+    register_builds(app, engine)
     register_qa(app, engine)
     register_dashboard(app, engine)
     return app

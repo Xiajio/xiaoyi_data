@@ -129,7 +129,12 @@ def embed_all(engine: Engine, embedder: TextEmbedder) -> dict:
 def _load_index(session: Session, producer: str | None = None, dataset_ids: list[int] | None = None) -> tuple[list[int], np.ndarray]:
     """读取嵌入索引。指定 producer 时只用该模型的向量（查询与索引必须同模型）；
     缺省取数量最多的一组。"""
-    stmt = select(Enrichment).where(Enrichment.kind == EMBEDDING_KIND, Enrichment.status != "superseded")
+    from sqlalchemy import func
+    latest_ids = select(func.max(DatasetVersion.id)).where(DatasetVersion.kind == "source").group_by(DatasetVersion.dataset_id)
+    stmt = select(Enrichment).where(Enrichment.kind == EMBEDDING_KIND, Enrichment.status != "superseded",
+                                    Enrichment.dataset_version_id.in_(latest_ids))
+    if producer is not None:
+        stmt = stmt.where(Enrichment.producer == producer)
     if dataset_ids is not None:
         stmt = stmt.where(Enrichment.dataset_id.in_(dataset_ids))
     rows = session.scalars(stmt.order_by(Enrichment.id.desc())).all()
