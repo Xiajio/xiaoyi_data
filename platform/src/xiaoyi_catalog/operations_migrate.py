@@ -88,7 +88,7 @@ def _table_summary(connection, table, columns=None):
     names = list(columns or table.c.keys())
     count, digest = 0, hashlib.sha256()
     statement = select(*(table.c[name] for name in names)).order_by(*table.primary_key.columns)
-    for row in connection.execution_options(stream_results=True).execute(statement).mappings():
+    for row in connection.execute(statement.execution_options(stream_results=True)).mappings():
         digest.update(_row_digest(row))
         count += 1
     return {"rows": count, "sha256": digest.hexdigest()}
@@ -219,7 +219,7 @@ def copy_catalog(source, target, metadata: MetaData, summaries: dict, *, migrati
                 if not target_table.c[field].nullable:
                     raise MigrationError("Cannot defer a non-nullable self-reference")
             statement = select(table).order_by(*table.primary_key.columns)
-            result = src.execution_options(stream_results=True).execute(statement).mappings()
+            result = src.execute(statement.execution_options(stream_results=True)).mappings()
             while rows := result.fetchmany(500):
                 records = [dict(row) for row in rows]
                 for record in records:

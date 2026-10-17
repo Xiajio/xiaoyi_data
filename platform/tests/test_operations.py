@@ -345,3 +345,15 @@ def test_operations_api_keeps_legacy_fields_and_separates_approval(engine, tmp_p
         assert data["approval_waiting"]["research_runs"] == 1
         assert data["queues"]["interactive"]["queued"] == 0
         assert set(data["queues"]) == {"interactive", "io", "cpu"}
+
+
+def test_table_checksum_streaming_does_not_leak_into_later_writes(legacy_catalog):
+    from xiaoyi_catalog.operations_migrate import _table_summary
+    source, _ = legacy_catalog
+    metadata = MetaData()
+    metadata.reflect(source)
+    with source.begin() as connection:
+        before = dict(connection.get_execution_options())
+        assert _table_summary(connection, metadata.tables["source"])["rows"] == 1
+        assert dict(connection.get_execution_options()) == before
+        connection.execute(metadata.tables["source"].update().values(enabled=False))

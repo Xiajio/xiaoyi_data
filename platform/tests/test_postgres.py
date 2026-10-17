@@ -62,7 +62,9 @@ def test_pg_migrations_versions_vector_and_task(postgres_engine):
         assert session.scalar(text("SELECT version_num FROM alembic_version")) == expected_schema_revision()
         assert session.scalar(text("SELECT pg_typeof(vector)::text FROM vector_embedding LIMIT 1")) == "vector"
         result = match_datasets(session, SearchFilter(modalities=("text",)), query_text="text", embedder=embedder)
-        assert result["ranking"] == "structured+cosine"
+        assert result["ranking"] == "hybrid_rrf"
+        assert {"keyword", "vector"} <= set(result["branches"])
+        assert result["retrieval_version"] == "catalog-retrieval/1"
         assert result["results"][0]["source_key"] == "postgres/text"
         assert result["results"][0]["similarity"] > 0
         run = create_run(session, {"goal":"PostgreSQL persistent task", "sources":["manual"]}, "ci")
