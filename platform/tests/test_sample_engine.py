@@ -352,3 +352,74 @@ def test_sample_identity_is_location_based_and_source_content_cannot_be_overwrit
     with session_scope(engine) as session:
         assert session.get(DatasetBuild,bid).status=="failed"
         assert session.scalar(select(func.count()).select_from(Sample))==1
+
+
+@pytest.mark.parametrize("modality", ["image", "table"])
+def test_rejected_rows_and_full_manifest_are_reproducible_across_storage_roots(tmp_path, monkeypatch, modality):
+    from xiaoyi_catalog.sample_demo import initialize, register_fixture, run_build
+    from xiaoyi_catalog.sample_engine import asset_path
+    monkeypatch.setenv("XIAOYI_STORAGE_ROOT", str(tmp_path / "unused"))
+    results = []
+    for name in ("original-storage", "different-storage"):
+        local_engine, directory, version = initialize(tmp_path / name)
+        try:
+            if modality == "image":
+                valid, broken = directory / "valid.png", directory / "broken.png"
+                Image.new("RGB", (12, 9), "red").save(valid)
+                broken.write_bytes(b"not an image")
+                paths = [valid, broken]
+                recipe = {"modality": "image"}
+                expected_reasons = {"image_decode_error"}
+                invalid = 1
+            else:
+                file = directory / "rows.jsonl"
+                file.write_text('{"x":1}\n{"x":NaN}\nnot-json\n{"missing":1}\n', encoding="utf-8")
+                paths = [file]
+                recipe = {"modality": "table", "feature_columns": ["x"]}
+                expected_reasons = {"non_finite_value", "invalid_json_object", "missing_required_field"}
+                invalid = 3
+            recipe["asset_ids"] = [register_fixture(local_engine, version, path) for path in paths]
+            _, manifest, digest = run_build(local_engine, recipe)
+            exclusions = asset_path(manifest["exclusions"]["storage_key"]).read_bytes()
+            assert manifest["counts"]["output_rows"] == 1
+            assert manifest["counts"]["invalid_rows"] == invalid
+            assert {row["reason"] for row in map(json.loads, exclusions.decode().splitlines())} == expected_reasons
+            assert str(directory) not in exclusions.decode()
+            results.append((manifest, digest, exclusions))
+        finally:
+            local_engine.dispose()
+    assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("error_number", [2, 13, 28])
+def test_image_os_failures_abort_instead_of_excluding_input(engine, source, tmp_path, monkeypatch, error_number):
+    import xiaoyi_catalog.sample_engine as implementation
+    file = tmp_path / "valid-input.png"
+    Image.new("RGB", (8, 8), "red").save(file)
+    aid = source("valid.png", file.read_bytes())
+    with session_scope(engine) as session:
+        ident = create_build(session, {"asset_ids": [aid], "modality": "image"}, "fixture").id
+    def fail_open(*args, **kwargs):
+        raise OSError(error_number, "synthetic operating-system failure", str(file))
+    monkeypatch.setattr(implementation.Image, "open", fail_open)
+    with pytest.raises(OSError) as error:
+        execute_build(engine, ident)
+    assert error.value.errno == error_number
+    with session_scope(engine) as session:
+        row = session.get(DatasetBuild, ident)
+        assert row.status == "failed" and not row.manifest_hash
+
+
+def test_unexpected_validation_failure_is_not_an_excluded_row(engine, source, monkeypatch):
+    import xiaoyi_catalog.sample_engine as implementation
+    aid = source("input.txt", "valid text\n")
+    with session_scope(engine) as session:
+        ident = create_build(session, {"asset_ids": [aid], "modality": "text"}, "fixture").id
+    def fail_sample(*args, **kwargs):
+        raise ValueError("unexpected implementation failure")
+    monkeypatch.setattr(implementation, "_sample", fail_sample)
+    with pytest.raises(ValueError, match="unexpected implementation failure"):
+        execute_build(engine, ident)
+    with session_scope(engine) as session:
+        row = session.get(DatasetBuild, ident)
+        assert row.status == "failed" and not row.manifest_hash

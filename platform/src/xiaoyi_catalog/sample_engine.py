@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -27,6 +28,12 @@ from .recipes import Recipe
 SCHEMA = pa.schema([(name, pa.string()) for name in
     ("sample_id", "content_hash", "modality", "content", "label", "group_key", "split", "source")])
 MAX_ROW_BYTES = 4 * 1024 * 1024
+logger = logging.getLogger(__name__)
+_ROW_REJECTION_CODES = frozenset({
+    "column_count_mismatch", "invalid_json_object", "row_too_large", "missing_required_field",
+    "invalid_label", "image_association_missing", "invalid_text", "empty_features",
+    "image_decode_error", "image_too_large",
+})
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False, default=str)
@@ -199,10 +206,29 @@ def split_for(key, recipe):
     return next(reversed(recipe.splits))
 
 def _image_info(path):
-    with Image.open(path) as im:
-        im.verify()
-    with Image.open(path) as im:
-        return {"width": im.width, "height": im.height, "mode": im.mode}
+    try:
+        with Image.open(path) as im:
+            im.verify()
+        with Image.open(path) as im:
+            return {"width": im.width, "height": im.height, "mode": im.mode}
+    except Image.DecompressionBombError as exc:
+        raise ValueError("image_too_large") from exc
+    except (OSError, SyntaxError, ValueError) as exc:
+        # Pillow uses errno-less OSError for invalid/truncated images. Real OS
+        # failures must abort the build, not silently exclude approved inputs.
+        if isinstance(exc, OSError) and exc.errno is not None:
+            raise
+        raise ValueError("image_decode_error") from exc
+
+
+def _row_rejection_reason(exc):
+    reason = str(exc)
+    if reason in _ROW_REJECTION_CODES:
+        return reason
+    if reason.startswith("Out of range float values are not JSON compliant"):
+        return "non_finite_value"
+    # Unexpected validation/implementation failures remain visible failures.
+    return None
 
 def _sample(asset, position, row, recipe, image_assets):
     sid = digest_json([asset["dataset_version_id"], asset["path"], position])
@@ -321,10 +347,15 @@ def _execute_build(engine, build_id, recipe, inputs, guard):
                             continue
                         rank = digest_json([recipe.seed, sample["sample_id"]])
                         connection.execute("INSERT INTO rows VALUES(?,?,?,?)", (sample["sample_id"], dedup, rank, canonical(sample)))
-                    except (ValueError, OSError, Image.DecompressionBombError) as exc:
+                    except ValueError as exc:
+                        reason = _row_rejection_reason(exc)
+                        if reason is None:
+                            raise
                         if recipe.invalid_policy == "fail":
-                            raise ValueError(f"invalid source row {asset['path']}:{position}: {exc}") from exc
-                        reason = str(exc)[:200]
+                            raise ValueError(f"invalid source row {asset['path']}:{position}: {reason}") from exc
+                        # Full diagnostic causes may contain machine-local paths;
+                        # keep them in optional logs, outside immutable manifests.
+                        logger.debug("Excluded source row %s:%s (%s)", asset["path"], position, reason, exc_info=True)
                         counts["invalid_rows"] += 1
                         errors.write(canonical({"asset_id": asset["asset_id"], "position": position, "reason": reason}) + "\n")
         connection.commit()
