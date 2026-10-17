@@ -70,8 +70,9 @@ def test_pg_migrations_versions_vector_and_task(postgres_engine):
         assert session.get(AgentRun, ident).status == "queued"
 
 
-def test_pg_vectors_filter_before_ranking_and_keep_versions(postgres_engine):
-    engine = postgres_engine
+@pytest.mark.parametrize("engine_fixture", ["engine", "postgres_engine"], ids=["sqlite", "postgres"])
+def test_vectors_filter_before_ranking_and_keep_versions(request, engine_fixture):
+    engine = request.getfixturevalue(engine_fixture)
     init_db(engine)
     collect(engine, FakeAdapter([
         make_raw("p/outside", card="perfect", tasks=("image-classification",)),
@@ -79,9 +80,13 @@ def test_pg_vectors_filter_before_ranking_and_keep_versions(postgres_engine):
         make_raw("p/good", card="good", tasks=("text-classification",), downloads=1),
     ]), CollectScope())
     class Embedder:
-        model_name, dim = "pg-fixed-vectors", 2
+        model_name, dim = "fixed-version-vectors", 2
         def embed(self, texts):
-            return [[1.0,0.0] if "perfect" in value or value == "query" else [0.8,0.6] if "good" in value else [0.0,1.0] for value in texts]
+            # Source keys are part of embedding text: p/good remains the same
+            # after its card changes. Match this fixture's card line exactly.
+            vectors = {"query": [1.0, 0.0], "perfect": [1.0, 0.0],
+                       "good": [0.8, 0.6], "bad": [0.0, 1.0]}
+            return [vectors[value.rsplit("\n", 1)[-1]] for value in texts]
     embedder = Embedder()
     embed_all(engine, embedder)
     with session_scope(engine) as session:
@@ -94,6 +99,7 @@ def test_pg_vectors_filter_before_ranking_and_keep_versions(postgres_engine):
         dataset_id = session.scalar(select(Dataset.id).where(Dataset.source_key == "p/good"))
         assert len(session.scalars(select(VectorEmbedding).where(VectorEmbedding.dataset_id == dataset_id)).all()) == 2
         result = match_datasets(session, SearchFilter(modalities=("text",)), query_text="query", embedder=embedder)
+        assert {item["source_key"] for item in result["results"]} == {"p/bad", "p/good"}
         assert all(item["similarity"] == pytest.approx(0) for item in result["results"])
 
 

@@ -6,11 +6,11 @@
 
 - 历史候选的事实条与高亮仅读取对应已验证版本元数据；缺少版本记录或元数据时显示“历史版本未验证”，不回退最新目录。关联证据必须绑定同一版本。
 - 总结开始时保存执行标识、开始时间和尝试次数；只有当前有效后台租约对应的实际执行显示处理中，排队单独展示。过期或被接管的执行不得发布迟到结果；SQLite 写事务串行保护提交与清理，连续中断最多自动尝试 3 次。兼容既有 `generating` 记录，无新增数据库迁移。
-- HF SDK 2.2 的可选 User-Agent 遥测会额外请求 `/api/agent-harnesses`。HTTP 测试隔离该遥测，保留真实 SDK 分页、请求钩子、超时与重试检查；PostgreSQL 验收断言同步到当前迁移 `0006_catalog_qa`，新增总结执行状态集成回归。
+- HF SDK 2.2 的可选 User-Agent 遥测会额外请求 `/api/agent-harnesses`。HTTP 测试隔离该遥测，保留真实 SDK 分页、请求钩子、超时与重试检查；PostgreSQL 验收断言同步到当前迁移 `0006_catalog_qa`，新增总结执行状态集成回归。向量回归的假嵌入器改为精确匹配卡片，避免数据集名称影响新版本向量；同一版本切换场景在 SQLite 和 PostgreSQL 上执行。
 
 本地 Windows 验收：
 
-- 完整后端：**279 passed、6 skipped**。5 项 PostgreSQL 用例因未配置隔离数据库跳过，1 项备份符号链接用例因 Windows 权限跳过；这些用例仍保留在 GitHub Linux/PostgreSQL CI 中执行。
+- 完整后端：**280 passed、6 skipped**。5 项 PostgreSQL 用例因未配置隔离数据库跳过，1 项备份符号链接用例因 Windows 权限跳过；这些用例仍保留在 GitHub Linux/PostgreSQL CI 中执行。
 - `npm run check`：**133 项 Vitest、70 项 Playwright 全部通过**，类型检查及生产构建通过。
 - 最终看板文案调整后重新构建，并通过全部 9 项工作台浏览器回归。
 - 专项覆盖旧版许可/规模/模态隔离、无版本证据排除、仅排队不显示执行中、真实执行期间状态查询、租约失效、旧 worker 结果拦截、中断上限及 SQLite 双线程提交/清理竞争。
