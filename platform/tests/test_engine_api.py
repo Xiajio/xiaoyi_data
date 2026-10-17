@@ -44,3 +44,16 @@ def test_readiness_and_reject_executable_job(engine,source):
         assert client.get("/api/health").status_code==200
         assert client.get("/api/ready").status_code==200
         assert client.post("/api/jobs",json={"kind":"shell.run","payload":{"code":"echo test"}}).status_code==400
+
+
+def test_job_descending_cursor_does_not_repeat_newer_items(engine,source):
+    aid=source("page.csv","x\n1\n")
+    with TestClient(create_app(engine.url.database,dev_auth=True)) as client:
+        ids=[]
+        for n in range(3):
+            response=client.post("/api/jobs",json={"kind":"profile.run","payload":{"asset_id":aid},"idempotency_key":f"page-{n}"})
+            assert response.status_code==202,response.text
+            ids.append(response.json()["job_id"])
+        first=client.get("/api/jobs?order=desc&limit=2").json()
+        second=client.get(f"/api/jobs?order=desc&limit=2&after_id={first['next_after_id']}").json()
+        assert [x["job_id"] for x in first["items"]+second["items"]]==list(reversed(ids))

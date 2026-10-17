@@ -1,0 +1,7 @@
+{
+  "changed_python_files": [
+    "operations_migrate.py"
+  ],
+  "core_processing_source_unchanged": true,
+  "change_explanation": "Only the offline database migration utility changed during the run; the benchmark processing, sample identity, jobs and HTTP service code were unchanged. This run uses an already initialized isolated SQLite fixture and does not execute cross-database migration."
+}

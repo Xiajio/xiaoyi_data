@@ -182,12 +182,12 @@ function OpsPage({ api, role, go, onToast }: { api: CatalogApi; role: Role; go: 
     <div className="pp-tabs cat-tabs">{[['summaries', '智能体总结'], ['runs', '采集任务'], ['audit', '操作审计']].map(([id, label]) => <button key={id} className={tab === id ? 'is-active' : ''} onClick={() => setTab(id as 'summaries' | 'runs' | 'audit')}>{label}</button>)}</div>
     {tab === 'summaries' ? <SummaryBoard api={api} role={role} go={go} onToast={onToast} /> : <>
     <LoadState loading={active.loading} error={active.error} onRetry={active.reload} />
-    {tab === 'runs' && runs.data ? <div className="table-wrap"><table><thead><tr><th>任务</th><th>来源</th><th>状态</th><th>统计</th><th>开始</th><th>结束</th></tr></thead><tbody>
+    {tab === 'runs' && runs.data ? <div className="table-wrap"><table aria-label="采集任务"><thead><tr><th>任务</th><th>来源</th><th>状态</th><th>统计</th><th>开始</th><th>结束</th></tr></thead><tbody>
       {runs.data.items.map((run: RunItem) => <tr key={run.id}><td className="pp-mono">#{run.id}</td><td>{run.adapter}</td><td><StatusBadge status={run.status} /></td>
         <td><small>{Object.entries(run.stats).filter(([, v]) => typeof v === 'number').map(([k, v]) => `${k}=${v}`).join(' ')}</small></td>
         <td>{dateTime(run.started_at)}</td><td>{dateTime(run.finished_at)}</td></tr>)}
     </tbody></table></div> : null}
-    {tab === 'audit' && audit.data ? <div className="table-wrap"><table><thead><tr><th>时间</th><th>角色</th><th>操作</th><th>详情</th></tr></thead><tbody>
+    {tab === 'audit' && audit.data ? <div className="table-wrap"><table aria-label="操作审计"><thead><tr><th>时间</th><th>角色</th><th>操作</th><th>详情</th></tr></thead><tbody>
       {audit.data.items.map((item: AuditItem) => <tr key={item.id}><td className="pp-nowrap">{dateTime(item.created_at)}</td><td>{item.actor}</td><td>{item.action}</td><td>{item.detail}</td></tr>)}
     </tbody></table></div> : null}
     </>}

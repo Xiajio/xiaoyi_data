@@ -68,7 +68,14 @@ def register_jobs(app,engine):
     def jobs(request:Request,after_id:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),order:Literal["asc","desc"]="asc"):
         actor=principal(request)
         with session_scope(engine) as session:
-            rows=session.scalars(select(Job).where(Job.actor==actor.username,Job.id>after_id).order_by(Job.id.desc() if order=="desc" else Job.id).limit(limit)).all()
+            query=select(Job).where(Job.actor==actor.username)
+            if order=="desc":
+                query=query.order_by(Job.id.desc())
+                if after_id:
+                    query=query.where(Job.id<after_id)
+            else:
+                query=query.where(Job.id>after_id).order_by(Job.id)
+            rows=session.scalars(query.limit(limit)).all()
             return {"items":[to_dict(row) for row in rows],"next_after_id":rows[-1].id if rows else after_id}
 
     @app.get("/api/jobs/{job_id}")

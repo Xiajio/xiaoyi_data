@@ -59,3 +59,40 @@ python -m pytest platform/tests/test_backup.py platform/tests/test_operations.py
 ```
 
 本机无 PostgreSQL 时，真实跨库测试会跳过；Windows 无符号链接权限时也会明确跳过。发布必须等待真实 PG 和 Compose 两个 CI 门禁通过，并完成部署环境恢复演练。默认每天成套备份到另一存储位置、每周抽验恢复、每次升级前完整恢复演练；备份原件与迁移原始归档在试点阶段不自动删除。
+
+## 每日维护备份的安装入口
+
+仓库提供 `deploy/backup-maintenance.sh`、`deploy/backup-maintenance.env.example` 和 `deploy/systemd/xiaoyi-backup.{service,timer}`。它们不会自动安装。完成真实恢复演练、确认每天 02:30 的停写窗口后，由管理员安装；时间使用服务器时区，漏过窗口不在开机时补跑。
+
+先在独立备份主机导出 NFS/CIFS 挂载，或配置明确用于离机轮换的独立介质。准备挂载点与备份目录，读取 `findmnt -n -o SOURCE --target /mnt/xiaoyi-offsite/catalog`，把精确结果填入配置。脚本同时核对挂载点、预期来源、与本地备份不同的文件系统；缺失配置、挂载未就绪、来源变化均在停服前失败。单独的本机目录不符合要求。
+
+维护约定：该 Compose 项目是数据库与资产的唯一写入者；所有人工迁移、导入、派生、恢复和其他 ops 命令都必须持有同一个 `XIAOYI_MAINTENANCE_LOCK`。脚本拒绝仍在运行的 migrate/ops 或未知项目容器，停掉 web/API/三个 worker，再确认只剩数据库运行。外部直连数据库的程序不受 Docker 控制，启用 timer 前必须停止或纳入同锁约定。
+
+```sh
+# 以下是管理员安装示例；先编辑项目路径、已有Compose项目名和离机挂载配置。
+sudo install -d -m 0700 /etc/xiaoyi
+sudo install -m 0600 deploy/backup-maintenance.env.example /etc/xiaoyi/backup-maintenance.env
+# 编辑 /etc/xiaoyi/backup-maintenance.env；已有恢复挂载时保留相同 COMPOSE_FILE 配置。
+# 编辑 service 中 ExecStart 的仓库路径、RequiresMountsFor；确认 timer 的维护窗口。
+sudo install -m 0644 deploy/systemd/xiaoyi-backup.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/xiaoyi-backup.timer /etc/systemd/system/
+sudo systemd-analyze verify /etc/systemd/system/xiaoyi-backup.service /etc/systemd/system/xiaoyi-backup.timer
+sudo systemctl daemon-reload
+# 在已确认的维护窗口先手工执行一次，核对异机副本与服务恢复后才启用 timer。
+sudo systemctl start xiaoyi-backup.service
+sudo journalctl -u xiaoyi-backup.service -n 100 --no-pager
+sudo systemctl enable --now xiaoyi-backup.timer
+```
+
+宿主机需要 Bash、Docker Compose v2、util-linux（flock/findmnt/mountpoint）和 GNU coreutils。提前加载验收通过的 ops 镜像并准备 UID 10001 可写的项目 `backups/`；脚本不会在维护窗口构建或拉取镜像。外部副本以执行脚本的账号写入，校验容器使用同 UID/GID，只读挂载外部目录，因此要为该账号配置 NFS/CIFS 写权限。
+
+脚本用 `flock -n` 防止重入，保存原先在线的服务集合，执行本地 backup → verify → 外部复制 → sync → 外部 verify。停止或复制失败会保留全部文件与本地日志，并尝试只恢复原先在线的服务；恢复服务失败也返回非零。成功与失败均不自动删除任何备份。日志位于 `backups/daily-*.log`，服务日志在 journal；监控系统应告警 systemd unit 的失败状态。宿主断电或 SIGKILL 无法执行退出清理，管理员恢复主机后按日志启动原服务。
+
+人工维护示例使用同一把锁，防止与每日备份重叠：
+
+```sh
+sudo flock -n /run/lock/xiaoyi-catalog-maintenance.lock \
+  docker compose run --rm ops python -m xiaoyi_catalog.operations check
+```
+
+测试 `platform/tests/test_backup_maintenance.py` 用假 Docker/挂载命令验证停写顺序、原服务恢复、复制失败、挂载错误、并发锁及恢复失败；它不会停止实际服务。CI 另外执行 Bash 语法与 ShellCheck。上线验收仍需使用真实外部挂载演练一次。

@@ -21,7 +21,7 @@ export function QueueHealth({ api }: { api: CatalogApi }) {
     <LoadState loading={status.loading} error={status.error} onRetry={status.reload} />
     {data?.queues && data.approval_waiting ? <>
       <p className="pp-footnote">数据时间：{dateTime(data.as_of)}{status.error ? ' · 当前显示上次成功读取的结果' : ''}</p>
-      <div className="table-wrap"><table><thead><tr><th>队列</th><th>等待 / 延后</th><th>运行</th><th>失败 / 失败率</th><th>最早等待</th><th>执行器心跳</th></tr></thead>
+      <div className="table-wrap"><table aria-label="队列健康"><thead><tr><th>队列</th><th>等待 / 延后</th><th>运行</th><th>失败 / 失败率</th><th>最早等待</th><th>执行器心跳</th></tr></thead>
         <tbody>{(Object.keys(QUEUE_LABELS) as (keyof typeof QUEUE_LABELS)[]).map(name => {
           const queue = data.queues[name];
           const finished = queue.failed + queue.succeeded;

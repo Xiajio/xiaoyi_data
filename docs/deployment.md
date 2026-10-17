@@ -63,3 +63,21 @@ docker compose logs --tail 200 api worker-interactive worker-io worker-cpu
 Alembic downgrade 明确不支持删除历史。存在 schema 变化时不能只回退镜像；全量恢复会回到备份时点，上线开放写入后的记录不能宣称自动零损回退。切换写入前完成验收，以缩小这个窗口。恢复路径的 Compose 覆盖示例为 `deploy/compose.recovery.yaml`；回退到旧发行版应使用该发行版的完整原配置，而不是把旧镜像混入新拓扑。
 
 CI 的 `check` 覆盖单元、真实 PG、跨库迁移、前端与浏览器；`compose-and-recovery` 构建真实镜像、启动完整 Compose、检查三队列并执行真实 PG16 备份恢复及 checkpoint 接续。本机 Windows 无 Docker/PG，不能把本机通过的单元测试当作上述门禁已通过；以本次提交 CI 运行结果为准。
+
+## 验收镜像交付
+
+CI 的 `compose-and-recovery` 只有在部署健康检查、三队列检查和 PostgreSQL 恢复演练全部成功后，才生成 `release-images` artifact。包内包含 API/web/ops 三个实际验收的镜像、`release.txt`、源码提交、镜像 ID/平台与 SHA-256 清单；不会推送镜像 registry，也不包含容器环境或服务密钥。
+
+PR 工作流使用 GitHub 的测试合并提交作为镜像标签，可能不同于 PR 分支的 HEAD。部署时必须以 artifact 内 `release.txt` 为准；push 工作流的标签对应该次 push SHA。不要根据 PR 页面上的提交号猜镜像标签。
+
+```sh
+# 在解压出的 release-images artifact 目录中：
+sha256sum -c SHA256SUMS
+docker image load --input release-images.tar.gz
+cat release.txt
+# 将该值写入部署 .env 的 XIAOYI_RELEASE；配置、迁移和验收仍按本手册完成。
+# 使用加载的镜像启动，不在上线窗口重新构建：
+docker compose up -d --no-build --pull never --wait
+```
+
+artifact 默认保留 14 天；发布负责人将验收包与对应源码、配置模板一起复制到受控长期存储，保留旧版本包用于整套恢复回滚。实际 .env/密钥另按受控配置备份规则保管。
