@@ -66,18 +66,24 @@ CI 的 `check` 覆盖单元、真实 PG、跨库迁移、前端与浏览器；`c
 
 ## 验收镜像交付
 
-CI 的 `compose-and-recovery` 只有在部署健康检查、三队列检查和 PostgreSQL 恢复演练全部成功后，才生成 `release-images` artifact。包内包含 API/web/ops 三个实际验收的镜像、`release.txt`、源码提交、镜像 ID/平台与 SHA-256 清单；不会推送镜像 registry，也不包含容器环境或服务密钥。
+CI 的 `compose-and-recovery` 将默认 Compose 中的固定 digest PG 镜像另标记为本次发行版的数据库镜像，再使用 `deploy/compose.offline.yaml`、`--no-build --pull never` 实际启动全套服务并执行恢复演练。默认 `compose.yaml` 中的上游 PG digest 保持不变。
 
-PR 工作流使用 GitHub 的测试合并提交作为镜像标签，可能不同于 PR 分支的 HEAD。部署时必须以 artifact 内 `release.txt` 为准；push 工作流的标签对应该次 push SHA。不要根据 PR 页面上的提交号猜镜像标签。
+全部检查成功后生成 `release-images` artifact。包内包含 API/web/ops/database 四个实际验收的镜像、根目录的两个 Compose 文件、受控 `.env.example`、全部已跟踪的 `deploy/` 运维文件、部署/迁移/恢复三份手册、`release.txt`、源码提交、镜像 ID/原始 digest/平台与递归 SHA-256 清单；不推送镜像 registry，不包含真实 `.env`、容器环境或服务密钥。目标主机可直接使用包内模板与维护脚本，无须再联网取得源码。
+
+PR 工作流使用 GitHub 的测试合并提交作为镜像标签，可能不同于 PR 分支的 HEAD。部署时必须以 artifact 内 `release.txt` 为准；push 工作流标签对应该次 push SHA。不要根据 PR 页面上的提交号猜镜像标签。
 
 ```sh
 # 在解压出的 release-images artifact 目录中：
 sha256sum -c SHA256SUMS
 docker image load --input release-images.tar.gz
 cat release.txt
-# 将该值写入部署 .env 的 XIAOYI_RELEASE；配置、迁移和验收仍按本手册完成。
-# 使用加载的镜像启动，不在上线窗口重新构建：
-docker compose up -d --no-build --pull never --wait
+cp .env.example .env
+# 将该值写入部署 .env 的 XIAOYI_RELEASE，并按前文准备 .env 和 data/import、backups、recovery。
+# 四个镜像已包含数据库；离线配置以发行版 tag 寻址，无须恢复上游 RepoDigest。
+docker compose -f compose.yaml -f compose.offline.yaml config --quiet
+docker compose -f compose.yaml -f compose.offline.yaml up -d --no-build --pull never --wait
 ```
+
+后续维护必须继续使用同一离线 override；备份 timer 的配置填写 `COMPOSE_FILE=/实际目录/compose.yaml:/实际目录/compose.offline.yaml`。使用源码树中的配置时，override 路径为 `deploy/compose.offline.yaml`。恢复资产挂载时再追加 `deploy/compose.recovery.yaml`，三者顺序保持默认、离线、恢复。
 
 artifact 默认保留 14 天；发布负责人将验收包与对应源码、配置模板一起复制到受控长期存储，保留旧版本包用于整套恢复回滚。实际 .env/密钥另按受控配置备份规则保管。

@@ -54,6 +54,7 @@ jobs:
     env:
       POSTGRES_PASSWORD: ci-disposable-only
       XIAOYI_RELEASE: ${{ github.sha }}
+      COMPOSE_FILE: compose.yaml:deploy/compose.offline.yaml
     steps:
       - uses: actions/checkout@v4
       - name: Prepare disposable volume mounts
@@ -62,10 +63,16 @@ jobs:
           sudo chown -R 10001:10001 data/import backups recovery
       - name: Build pinned application and operations images
         run: docker compose --profile ops build
+      - name: Prepare the pinned database image for offline delivery
+        run: |
+          set -euo pipefail
+          database_image=$(docker compose -f compose.yaml config --format json | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["database"]["image"])')
+          docker pull "$database_image"
+          docker image tag "$database_image" "xiaoyi-catalog-database:$XIAOYI_RELEASE"
       - name: Validate full deployment and separate queues
         run: |
           docker compose config --quiet
-          docker compose up -d --wait --wait-timeout 180
+          docker compose up -d --no-build --pull never --wait --wait-timeout 180
           curl --fail http://127.0.0.1:8080/api/ready
           docker compose exec -T api python -m xiaoyi_catalog.operations worker-health --queue interactive
           docker compose exec -T api python -m xiaoyi_catalog.operations worker-health --queue io
@@ -81,15 +88,27 @@ jobs:
           mkdir -p release
           printf '%s\n' "$XIAOYI_RELEASE" > release/release.txt
           git rev-parse HEAD > release/source-commit.txt
-          images=("xiaoyi-catalog-api:$XIAOYI_RELEASE" "xiaoyi-catalog-web:$XIAOYI_RELEASE" "xiaoyi-catalog-ops:$XIAOYI_RELEASE")
-          docker image inspect --format '{"id":"{{.Id}}","tags":{{json .RepoTags}},"os":"{{.Os}}","architecture":"{{.Architecture}}"}' "${images[@]}" > release/image-metadata.jsonl
+          images=("xiaoyi-catalog-api:$XIAOYI_RELEASE" "xiaoyi-catalog-web:$XIAOYI_RELEASE" "xiaoyi-catalog-ops:$XIAOYI_RELEASE" "xiaoyi-catalog-database:$XIAOYI_RELEASE")
+          docker image inspect --format '{"id":"{{.Id}}","tags":{{json .RepoTags}},"repo_digests":{{json .RepoDigests}},"os":"{{.Os}}","architecture":"{{.Architecture}}"}' "${images[@]}" > release/image-metadata.jsonl
           docker image save "${images[@]}" | gzip > release/release-images.tar.gz
-          (cd release && sha256sum release-images.tar.gz image-metadata.jsonl release.txt source-commit.txt > SHA256SUMS)
+          cp compose.yaml release/compose.yaml
+          cp deploy/compose.offline.yaml release/compose.offline.yaml
+          # Whitelist version-controlled templates and runbooks; never copy real .env.
+          cp .env.example release/.env.example
+          git ls-files -z -- deploy/ | while IFS= read -r -d '' path; do
+            test -f "$path" && test ! -L "$path"
+            mkdir -p "release/$(dirname "$path")"
+            cp "$path" "release/$path"
+          done
+          mkdir -p release/docs
+          cp docs/deployment.md docs/history-migration.md docs/backup-recovery.md release/docs/
+          (cd release && find . -type f ! -path ./SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: release-images
           path: release/
+          include-hidden-files: true
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
