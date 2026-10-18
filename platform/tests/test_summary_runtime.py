@@ -117,9 +117,11 @@ def test_forged_citation_fails_after_bounded_attempts(engine):
     row = read(engine, ident)
     assert row.status == "failed" and "未通过原文核验" in row.value["error"]
     assert row.value["attempts"] == 3
-    # 失败后再次提交重置为生成中（重试语义）
-    assert submit(engine, dataset, version)["status"] == "generating"
-    assert read(engine, ident).value["attempts"] == 0
+    # 手动重试创建新修订；失败证明保持不变。
+    retry = submit(engine, dataset, version)
+    assert retry["status"] == "generating" and retry["id"] != ident
+    assert read(engine, ident).value["attempts"] == 3
+    assert read(engine, retry["id"]).parent_enrichment_id == ident
 
 
 def test_unverifiable_claims_are_demoted_but_grounded_ones_publish(engine):
@@ -355,8 +357,10 @@ def test_repeated_interruptions_reach_retry_limit_without_another_model_call(eng
     row = read(engine, ident)
     assert model.calls == 3 and row.status == "failed" and row.value["attempts"] == 3
     assert "重试上限" in row.value["error"]
-    assert submit(engine, dataset, version)["status"] == "generating"
-    assert read(engine, ident).value == {"attempts": 0}
+    retry = submit(engine, dataset, version)
+    assert retry["status"] == "generating" and retry["id"] != ident
+    assert read(engine, retry["id"]).value == {"attempts": 0}
+    assert read(engine, ident).value["attempts"] == 3
 
 
 @pytest.mark.parametrize("cleanup", [False, True], ids=["publish", "cleanup"])

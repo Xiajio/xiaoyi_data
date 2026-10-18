@@ -1,0 +1,19 @@
+# Use only with -f compose.yaml -f deploy/compose.recovery.yaml.
+# POSTGRES_DB must name the separately restored database.
+# XIAOYI_RECOVERY_ASSETS must be the verified absolute host path of restored assets.
+x-restored-storage: &restored-storage
+  volumes:
+    - "${XIAOYI_RECOVERY_ASSETS:?Set the verified restored asset directory}:/data/assets"
+services:
+  migrate:
+    <<: *restored-storage
+  api:
+    <<: *restored-storage
+  worker-interactive:
+    <<: *restored-storage
+  worker-io:
+    <<: *restored-storage
+  worker-cpu:
+    <<: *restored-storage
+  ops:
+    <<: *restored-storage

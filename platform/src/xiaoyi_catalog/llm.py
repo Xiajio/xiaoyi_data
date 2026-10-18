@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 PROMPT_VERSION = "research-agent/2"
 T = TypeVar("T", bound=BaseModel)
@@ -34,6 +34,13 @@ class EvidenceClaim(StrictModel):
     evidence_ids: list[int] = Field(min_length=1, max_length=20)
     # Verbatim spans make the claimed factual basis inspectable. They are checked against evidence.
     quotes: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("quotes")
+    @classmethod
+    def nonblank_quotes(cls, values):
+        if any(not quote.strip() or len(quote) > 4000 for quote in values):
+            raise ValueError("引文必须为非空白原文，长度不超过 4000")
+        return values
 
 
 class CandidateAssessment(StrictModel):

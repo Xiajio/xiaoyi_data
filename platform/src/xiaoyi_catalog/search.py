@@ -101,7 +101,10 @@ def search_datasets(session: Session, filt: SearchFilter) -> list[dict]:
     if filt.query:
         pattern = f"%{filt.query}%"
         stmt = stmt.where(or_(Dataset.name.like(pattern), Dataset.source_key.like(pattern), Dataset.card_text.like(pattern)))
-    stmt = stmt.order_by(Dataset.downloads.desc(), Dataset.id).limit(filt.limit).offset(filt.offset)
+    spec = getattr(filt, "task_spec", None)
+    stmt = stmt.order_by(Dataset.downloads.desc(), Dataset.id)
+    if spec is None:
+        stmt = stmt.limit(filt.limit).offset(filt.offset)
     results = []
     for row in session.scalars(stmt):
         item = dataset_to_dict(row)
@@ -109,7 +112,15 @@ def search_datasets(session: Session, filt: SearchFilter) -> list[dict]:
         item.update(dataset_version_id=version.id if version else None,
                     revision=version.revision if version else None,
                     provenance_status=version.provenance_status if version else "legacy_unverified")
+        if spec is not None:
+            from .task_spec import evaluate_task_spec
+            evaluation = evaluate_task_spec(version_to_dict(session, version) if version else {}, spec)
+            if evaluation["status"] != "pass":
+                continue
+            item["constraint_evaluation"] = evaluation
         results.append(item)
+    if spec is not None:
+        return results[filt.offset:] if filt.limit is None else results[filt.offset:filt.offset + filt.limit]
     return results
 
 

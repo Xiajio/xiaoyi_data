@@ -10,7 +10,7 @@ from typing import Callable, Literal, TypedDict
 from sqlalchemy import or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
-from pydantic import AliasChoices, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, ConfigDict, Field, field_validator, model_validator
 from .db import session_scope
 from .llm import Assessments, LLMClient, ModelResponse, ResearchPlan, StrictModel, PROMPT_VERSION
 from .models import Dataset, DatasetVersion, Enrichment, Evidence, Pairing, Snapshot, Source, utcnow
@@ -34,14 +34,15 @@ class BudgetExceeded(RuntimeErrorBase):
 
 
 class HardConstraints(StrictModel):
-    modalities: list[str] = Field(default_factory=list, max_length=20)
-    task_categories: list[str] = Field(default_factory=list, max_length=30)
-    languages: list[str] = Field(default_factory=list, max_length=30)
-    license_class: list[str] = Field(default_factory=list, validation_alias=AliasChoices("license_class", "license_classes"))
-    min_rows: int | None = Field(default=None, ge=0)
-    max_rows: int | None = Field(default=None, ge=0)
-    min_bytes: int | None = Field(default=None, ge=0)
-    max_bytes: int | None = Field(default=None, ge=0)
+    # Keep the legacy named model for callers; all task shapes share one validator.
+    model_config = {"extra": "allow"}
+    schema_version: int = 1
+
+    @model_validator(mode="before")
+    @classmethod
+    def task_contract(cls, value):
+        from .task_spec import validate_task_spec
+        return validate_task_spec(value)
 
 
 class RunRequest(StrictModel):
@@ -67,11 +68,6 @@ def event(session: Session, run_id: int, kind: str, message: str, detail: dict |
 
 def create_run(session: Session, payload: dict, actor: str = "api") -> AgentRun:
     request = RunRequest.model_validate(payload)
-    constraints = request.hard_constraints
-    if constraints.min_rows is not None and constraints.max_rows is not None and constraints.min_rows > constraints.max_rows:
-        raise RuntimeErrorBase("min_rows 不能大于 max_rows")
-    if constraints.min_bytes is not None and constraints.max_bytes is not None and constraints.min_bytes > constraints.max_bytes:
-        raise RuntimeErrorBase("min_bytes 不能大于 max_bytes")
     actor_name = actor if isinstance(actor, str) else getattr(actor, "username", str(actor))
     run = AgentRun(actor=actor_name[:128], goal=request.goal, payload=request.model_dump(), prompt_version=PROMPT_VERSION)
     session.add(run)
@@ -125,6 +121,12 @@ def retry_run(session: Session, run_id: int, actor=None) -> AgentRun:
     _check_owner(run, actor)
     if run.status not in ("failed", "cancelled"):
         raise RuntimeErrorBase("只有失败或取消的任务可重试")
+    from .operations_migrate import is_archived_run
+    if is_archived_run(session, run_id):
+        replacement = create_run(session, dict(run.payload), run.actor)
+        event(session, replacement.id, "migration_restart", "从迁移前任务重新发起；原检查点只读归档，不继承批准", {"predecessor_run_id": run.id})
+        event(session, run.id, "replacement_created", "历史任务保持原样，新运行已创建", {"replacement_run_id": replacement.id})
+        return replacement
     if run.attempts >= 3:
         raise RuntimeErrorBase("任务已达到最多 3 次执行上限")
     if run.tool_calls >= run.payload["max_tool_calls"]:
@@ -276,22 +278,16 @@ class ResearchRunner:
                         source_failures.append({"query": query, "status": result.status, "stats": result.stats})
             self.check()
             with session_scope(self.engine) as session:
-                stmt = select(Dataset).join(Source, Source.id == Dataset.source_id).where(
-                    Source.kind.in_(sources), Dataset.status == "active")
-                # Search existing registrations too. Missing metadata is never converted to affirmative facts.
-                terms = [Dataset.source_key.in_(collected_keys)] if collected_keys else []
-                for q in queries:
-                    terms.extend([Dataset.card_text.ilike("%" + q + "%"), Dataset.name.ilike("%" + q + "%")])
-                if terms:
-                    stmt = stmt.where(or_(*terms))
-                rows = session.scalars(stmt.order_by(Dataset.downloads.desc(), Dataset.id).limit(limit)).all()
-                ids = []
-                for row in rows:
-                    version = latest_version(session, row.id)
-                    if version:
-                        ids.append(version.id)
+                from .retrieval import RetrievalService
+                from .search import SearchFilter
+                retrieval = RetrievalService(session).search(
+                    SearchFilter(limit=limit), queries=queries, sources=sources,
+                    requirements=self.payload["hard_constraints"], include_source_keys=collected_keys,
+                    include_ineligible=True)
+                ids = [item["dataset_version_id"] for item in retrieval["results"] if item["dataset_version_id"]]
                 event(session, self.run_id, "candidates_found", f"发现 {len(ids)} 个候选版本",
-                      {"dataset_version_ids": ids, "source_failures": source_failures})
+                      {"dataset_version_ids": ids, "source_failures": source_failures,
+                       "retrieval_version": retrieval["retrieval_version"], "truncated": retrieval["truncated"]})
             if not ids and source_failures:
                 raise RuntimeErrorBase("来源采集失败且目录没有可用候选；请检查来源连接后重试")
             return {"version_ids": ids, "source_failures": source_failures}
@@ -318,6 +314,7 @@ class ResearchRunner:
     def assess(self, state: GraphState) -> dict:
         from .search import version_to_dict
         from .match import missing_for_requirement
+        from .task_spec import evaluate_task_spec
         self.stage("matching", "核对证据、硬约束与科研相关性")
         candidates: list[dict] = []
         evidence_by_version: dict[int, dict[int, dict]] = {}
@@ -335,7 +332,8 @@ class ResearchRunner:
                     gaps = list(gaps) + ["版本证据尚未验证"]
                 item.pop("card_text", None)
                 candidates.append({"dataset_version_id": version_id, "dataset": item,
-                    "hard_constraint_gaps": gaps, "evidence": list(evidence.values())[:8]})
+                    "hard_constraint_gaps": gaps, "constraint_evaluation": evaluate_task_spec(item, self.payload["hard_constraints"]),
+                    "evidence": list(evidence.values())[:8]})
         for offset in range(0, len(candidates), 10):
             self.check()
             batch = candidates[offset:offset + 10]

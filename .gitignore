@@ -15,3 +15,10 @@ platform/build/
 
 .playwright-cli/
 /data/
+
+.test-tmp/
+
+.test-runs/
+
+/backups/
+/recovery/

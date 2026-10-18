@@ -257,3 +257,37 @@ def test_failed_download_retry_reuses_approved_files_within_remaining_quota(setu
         snapshot=freeze_snapshot(session,"retry")
         approve_snapshot(session,snapshot.id)
         assert build_bundle(session,snapshot.id).is_file()
+
+
+def test_bundle_job_publication_receipt_recovers_before_job_finish(setup):
+    from datetime import timedelta
+    from xiaoyi_catalog.models import utcnow
+    from xiaoyi_catalog.models_jobs import Job, Artifact
+    from xiaoyi_catalog.models_assets import ResearchBundle
+    from xiaoyi_catalog.jobs import enqueue, claim, Guard
+    from xiaoyi_catalog.bundles import build_bundle_job
+    engine,version_id,root=setup
+    with session_scope(engine) as session:
+        request=proposal(session,version_id)
+        decide_download(session,request.id,"approved","reviewer")
+    process_next_download(engine,fetcher=fetch)
+    with session_scope(engine) as session:
+        result=propose_pairing(session,{"external_id":"receipt","title":"Receipt test","requirements":{"modalities":["text"],"license_class":["permissive"]}},[version_id],"evidence")
+        review_pairing(session,result["created"][0]["id"],"confirmed")
+        snapshot=freeze_snapshot(session,"receipt")
+        approve_snapshot(session,snapshot.id)
+        sid=snapshot.id
+        job=enqueue(session,"bundle.build",{"snapshot_id":sid},"reviewer");jid=job.id
+    leased=claim(engine,"io","first")
+    with Guard(engine,leased) as guard:
+        result=build_bundle_job(engine,sid,guard=guard)
+    # Crash after publication, before finish. A late cancellation must not undo a committed result.
+    with session_scope(engine) as session:
+        assert session.scalar(select(Artifact).where(Artifact.job_id==jid)).manifest==result
+        item=session.get(Job,jid)
+        item.lease_until=utcnow()-timedelta(seconds=1);item.cancel_requested=True
+    assert claim(engine,"io","replacement") is None
+    with session_scope(engine) as session:
+        assert session.get(Job,jid).status=="succeeded"
+        assert session.get(Job,jid).result==result
+        assert len(session.scalars(select(ResearchBundle).where(ResearchBundle.snapshot_id==sid)).all())==1

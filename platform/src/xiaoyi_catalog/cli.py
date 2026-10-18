@@ -143,14 +143,12 @@ def _guarded(args: argparse.Namespace, action, *, audit_action: str | None = Non
     try:
         with session_scope(engine) as session:
             actor = _cli_human(session, args) if audit_action else None
+            session.info["cli_actor"] = actor
             result = action(session)
             if actor is not None:
                 from .models import Audit, Review
                 session.add(Audit(actor=actor.username, action=audit_action,
                                   detail=json.dumps(result, ensure_ascii=False)))
-                if audit_action == "pairing_review_cli":
-                    session.add(Review(target_kind="pairing", target_id=args.pairing,
-                                       decision=args.decision, note=args.note, role=actor.role))
     except (PairingError, PermissionError) as exc:
         print(f"操作未完成：{exc}", file=sys.stderr)
         return 1
@@ -207,7 +205,7 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
 
 def cmd_review(args: argparse.Namespace) -> int:
-    return _guarded(args, lambda session: {"id": review_pairing(session, args.pairing, args.decision, args.note).id, "status": args.decision}, audit_action="pairing_review_cli")
+    return _guarded(args, lambda session: {"id": review_pairing(session, args.pairing, args.decision, args.note, actor=session.info["cli_actor"].username, role=session.info["cli_actor"].role).id, "status": args.decision}, audit_action="pairing_review_cli")
 
 
 def cmd_freeze(args: argparse.Namespace) -> int:

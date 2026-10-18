@@ -11,6 +11,7 @@ from sqlalchemy import text, select, event
 from xiaoyi_catalog.db import create_engine_for, init_db, session_scope
 from xiaoyi_catalog.models import Dataset, DatasetVersion, VectorEmbedding
 from xiaoyi_catalog.models_runtime import AgentRun
+from xiaoyi_catalog.operations import expected_schema_revision
 from xiaoyi_catalog.agent_runtime import create_run
 from xiaoyi_catalog.collect import collect
 from xiaoyi_catalog.adapters.base import CollectScope
@@ -58,10 +59,12 @@ def test_pg_migrations_versions_vector_and_task(postgres_engine):
     embed_all(engine, embedder)
     with session_scope(engine) as session:
         assert session.scalar(text("SELECT extversion FROM pg_extension WHERE extname='vector'"))
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "0006_catalog_qa"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == expected_schema_revision()
         assert session.scalar(text("SELECT pg_typeof(vector)::text FROM vector_embedding LIMIT 1")) == "vector"
         result = match_datasets(session, SearchFilter(modalities=("text",)), query_text="text", embedder=embedder)
-        assert result["ranking"] == "structured+cosine"
+        assert result["ranking"] == "hybrid_rrf"
+        assert {"keyword", "vector"} <= set(result["branches"])
+        assert result["retrieval_version"] == "catalog-retrieval/1"
         assert result["results"][0]["source_key"] == "postgres/text"
         assert result["results"][0]["similarity"] > 0
         run = create_run(session, {"goal":"PostgreSQL persistent task", "sources":["manual"]}, "ci")
@@ -179,3 +182,109 @@ def test_pg_summary_execution_is_visible_only_during_a_leased_attempt(postgres_e
         assert active_summary_executions(session) == []
         summary = session.get(Enrichment, ident)
         assert summary.status == "candidate" and "execution" not in summary.value
+
+
+def test_pg_queue_skips_locked_jobs_and_fences_expired_attempts(postgres_engine):
+    """Two real PG connections exercise row locks, then reject stale publication."""
+    from datetime import timedelta
+    from sqlalchemy.orm import Session
+    from xiaoyi_catalog.jobs import enqueue,claim,Guard,finish,digest
+    from xiaoyi_catalog.models_jobs import Job,Artifact
+    from xiaoyi_catalog.models import utcnow
+    from xiaoyi_catalog.agent_runtime import LeaseLost
+    engine=postgres_engine
+    init_db(engine)
+    with session_scope(engine) as session:
+        first=enqueue(session,"profile.run",{"asset_id":101},"pg-fixture", "pg-lock-first").id
+        second=enqueue(session,"profile.run",{"asset_id":102},"pg-fixture", "pg-lock-second").id
+    with Session(engine) as blocking, blocking.begin():
+        assert blocking.scalar(select(Job).where(Job.id==first).with_for_update()).id==first
+        # Configure the only free pooled connection to fail quickly if SKIP LOCKED regresses.
+        with engine.connect() as probe:
+            probe.exec_driver_sql("SET statement_timeout = '5s'")
+            probe.commit()
+        claimed=claim(engine,"cpu","worker-independent")
+        assert claimed.id==second
+    original=claim(engine,"cpu","worker-old")
+    assert original.id==first
+    old_guard=Guard(engine,original)
+    with session_scope(engine) as session:
+        session.get(Job,first).lease_until=utcnow()-timedelta(seconds=1)
+    replacement=claim(engine,"cpu","worker-new")
+    assert replacement.id==first and replacement.fence!=original.fence
+    with pytest.raises(LeaseLost):
+        finish(engine,old_guard,"succeeded",{"stale":True})
+    # Even a pending INSERT must roll back when the result transaction loses its fence.
+    with pytest.raises(LeaseLost):
+        with session_scope(engine) as session:
+            value={"stale":True}
+            session.add(Artifact(job_id=first,content_hash=digest(value),manifest=value))
+            old_guard(session)
+    with session_scope(engine) as session:
+        assert session.scalar(select(Artifact).where(Artifact.job_id==first)) is None
+        assert session.get(Job,first).owner=="worker-new"
+    accepted={"accepted":True}
+    finish(engine,Guard(engine,replacement),"succeeded",accepted)
+    with session_scope(engine) as session:
+        assert session.get(Job,first).status=="succeeded"
+        assert session.scalar(select(Artifact).where(Artifact.job_id==first)).manifest==accepted
+
+
+def test_pg_sample_worker_publishes_rows_json_receipt_and_portable_export(postgres_engine,tmp_path,monkeypatch):
+    """Run the actual CPU and I/O workers against PostgreSQL, including Parquet output."""
+    import json
+    import runpy
+    import zipfile
+    from sqlalchemy import func
+    from xiaoyi_catalog.auth import Principal
+    from xiaoyi_catalog.jobs import enqueue,run_queue_once
+    from xiaoyi_catalog.models import Source
+    from xiaoyi_catalog.models_jobs import Job,Artifact
+    from xiaoyi_catalog.models_samples import Sample,BuildSample,DatasetBuild
+    from xiaoyi_catalog.sample_demo import register_fixture
+    from xiaoyi_catalog.sample_engine import create_build,publish_build,asset_path
+    engine=postgres_engine
+    monkeypatch.setenv("XIAOYI_STORAGE_ROOT",str(tmp_path/"pg-assets"))
+    init_db(engine)
+    with session_scope(engine) as session:
+        source=Source(kind="manual",endpoint="pg-synthetic-sample-fixture")
+        session.add(source);session.flush()
+        dataset=Dataset(source_id=source.id,source_key="pg/sample-build",fingerprint="pg-sample-fixture",license="CC0",license_class="permissive")
+        session.add(dataset);session.flush()
+        version=DatasetVersion(dataset_id=dataset.id,revision="fixture/1",provenance_status="verified",metadata_json={"synthetic":True,"license":"CC0"})
+        session.add(version);session.flush()
+        version_id=version.id
+    file=tmp_path/"pg-rows.csv"
+    file.write_text("text,label,patient\nalpha,a,p1\nalpha,a,p1\nbeta,b,p1\ngamma,a,p2\n",encoding="utf-8")
+    aid=register_fixture(engine,version_id,file)
+    with session_scope(engine) as session:
+        build=create_build(session,{"asset_ids":[aid],"modality":"text","label_column":"label","group_column":"patient","shard_rows":2},"pg-fixture")
+        build_id=build.id
+        job_id=enqueue(session,"build.run",{"build_id":build_id},"pg-fixture").id
+    assert run_queue_once(engine,"cpu",owner="pg-build-worker")
+    with session_scope(engine) as session:
+        job=session.get(Job,job_id)
+        assert job.status=="succeeded",job.error
+        build=session.get(DatasetBuild,build_id)
+        assert build.status=="ready" and build.sample_count==3
+        assert build.manifest["counts"]["input_rows"]==4
+        assert build.manifest["counts"]["exact_duplicates"]==1
+        assert session.scalar(select(func.count()).select_from(Sample))==3
+        assert session.scalar(select(func.count()).select_from(BuildSample))==3
+        groups=session.execute(select(BuildSample.group_key,func.count(func.distinct(BuildSample.split))).where(BuildSample.build_id==build_id).group_by(BuildSample.group_key)).all()
+        assert groups and all(count==1 for _,count in groups)
+        receipt=session.scalar(select(Artifact).where(Artifact.job_id==job_id))
+        assert receipt.manifest["manifest_hash"]==build.manifest_hash
+        publish_build(session,build_id,Principal(0,"pg-human-reviewer","reviewer"),build.manifest_hash)
+        export_id=enqueue(session,"build.export",{"build_id":build_id},"pg-fixture").id
+    assert run_queue_once(engine,"io",owner="pg-export-worker")
+    with session_scope(engine) as session:
+        export=session.get(Job,export_id)
+        assert export.status=="succeeded",export.error
+        assert session.scalar(select(Artifact).where(Artifact.job_id==export_id)).manifest==export.result
+        path=asset_path(export.result["storage_key"])
+    with zipfile.ZipFile(path) as archive:
+        assert json.loads(archive.read("manifest.json"))["counts"]["output_rows"]==3
+        archive.extractall(tmp_path/"pg-export")
+    loader=runpy.run_path(str(tmp_path/"pg-export"/"load.py"))
+    assert len(list(loader["load"]()))==3

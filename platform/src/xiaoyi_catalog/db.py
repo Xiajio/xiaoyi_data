@@ -1,6 +1,9 @@
 """SQLite/PostgreSQL engines and versioned Alembic migrations."""
 from __future__ import annotations
 from contextlib import contextmanager
+from contextvars import ContextVar
+
+execution_guard = ContextVar("catalog_execution_guard", default=None)
 from pathlib import Path
 from typing import Iterator
 from importlib import import_module
@@ -11,7 +14,7 @@ from .models import Base
 
 
 def register_models() -> None:
-    for name in ("models_runtime", "models_assets", "models_collection", "models_qa"):
+    for name in ("models_runtime", "models_assets", "models_collection", "models_qa", "models_operations", "models_trust", "models_jobs", "models_samples"):
         try:
             import_module(f"xiaoyi_catalog.{name}")
         except ModuleNotFoundError as exc:
@@ -66,6 +69,9 @@ def session_scope(engine: Engine) -> Iterator[Session]:
     session = Session(engine)
     try:
         yield session
+        guard = execution_guard.get()
+        if guard is not None:
+            guard(session)
         session.commit()
     except BaseException:
         session.rollback()

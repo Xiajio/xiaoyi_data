@@ -37,30 +37,33 @@ class TestMatchDatasets:
         _seed(engine, embed=True)
         with session_scope(engine) as session:
             result = match_datasets(session, SearchFilter(modalities=("text",)), query_text="情感 分类", embedder=HashEmbedder())
-            assert result["ranking"] == "structured+cosine"
+            assert result["ranking"] == "hybrid_rrf"
             assert [item["source_key"] for item in result["results"]] == ["a/zh-sentiment", "a/unknown-license"]
             assert result["results"][0]["similarity"] > result["results"][1]["similarity"]
             assert all(item["modalities"] == ["text"] for item in result["results"])
 
-    def test_query_without_embedder_falls_back(self, engine):
+    def test_query_without_embedder_uses_keyword(self, engine):
         _seed(engine, embed=True)
         with session_scope(engine) as session:
             result = match_datasets(session, SearchFilter(), query_text="情感", embedder=None)
-            assert result["ranking"] == "downloads"
+            assert result["ranking"] == "keyword"
+            assert [row["source_key"] for row in result["results"]] == ["a/zh-sentiment"]
 
     def test_empty_index_falls_back_with_note(self, engine):
         _seed(engine)
         with session_scope(engine) as session:
             result = match_datasets(session, SearchFilter(), query_text="情感", embedder=HashEmbedder())
-            assert result["ranking"] == "downloads" and "嵌入索引为空" in result["note"]
+            assert result["ranking"] == "keyword" and "嵌入索引为空" in result["note"]
 
 
 class TestRequirementMapping:
-    def test_maps_contract_keys_and_ignores_unknown(self):
+    def test_preserves_unknown_contract_keys_as_unsupported(self):
         filt = requirement_to_filter({"modalities": ["text"], "license_class": ["permissive"], "min_rows": 50,
                                       "limit": 5, "future_key": "ignored"})
-        assert filt.modalities == ("text",) and filt.license_classes == ("permissive",)
-        assert filt.min_rows == 50 and filt.limit == 5
+        from xiaoyi_catalog.task_spec import evaluate_task_spec
+        assert filt.task_spec["modalities"] == ["text"] and filt.limit == 5
+        result = evaluate_task_spec({"modalities": ["text"], "license_class": "permissive", "size_rows": 100}, filt.task_spec)
+        assert result["status"] == "unsupported"
 
     def test_defaults(self):
         filt = requirement_to_filter({})

@@ -55,7 +55,9 @@ class DatasetSummary(StrictModel):
 def summary_to_dict(row: Enrichment) -> dict:
     return {"id": row.id, "dataset_id": row.dataset_id, "dataset_version_id": row.dataset_version_id,
             "kind": row.kind, "producer": row.producer, "status": row.status,
-            "value": row.value, "evidence_ids": row.evidence_ids}
+            "value": row.value, "evidence_ids": row.evidence_ids,
+            "content_hash": row.content_hash, "history_status": row.history_status,
+            "parent_enrichment_id": row.parent_enrichment_id}
 
 
 def _latest_agent_summary(session, dataset_version_id: int) -> Enrichment | None:
@@ -65,7 +67,7 @@ def _latest_agent_summary(session, dataset_version_id: int) -> Enrichment | None
 
 
 def submit_summary(session, dataset_id: int, dataset_version_id: int, actor: str) -> dict:
-    """提交生成请求：已存在生成中/待核验/已确认记录时幂等返回；失败或被驳回的记录重置后重试。"""
+    """提交生成请求：已存在生成中/待核验/已确认记录时幂等返回；重试创建新修订，保留旧生成与审核。"""
     dataset = session.get(Dataset, dataset_id)
     if not dataset or dataset.status != "active":
         raise ValueError("当前有效目录中没有该数据集")
@@ -78,14 +80,11 @@ def submit_summary(session, dataset_id: int, dataset_version_id: int, actor: str
     existing = _latest_agent_summary(session, version.id)
     if existing and existing.status in {"generating", "candidate", "confirmed", "corrected"}:
         return summary_to_dict(existing)
-    if existing:
-        existing.status, existing.value, existing.evidence_ids = "generating", {"attempts": 0}, []
-        row = existing
-    else:
-        row = Enrichment(dataset_id=dataset.id, dataset_version_id=version.id, kind="llm_summary",
-                         producer=PRODUCER, value={"attempts": 0}, confidence="model_inferred",
-                         evidence_ids=[], status="generating")
-        session.add(row)
+    row = Enrichment(dataset_id=dataset.id, dataset_version_id=version.id, kind="llm_summary",
+                     producer=PRODUCER, value={"attempts": 0}, confidence="model_inferred",
+                     evidence_ids=[], status="generating",
+                     parent_enrichment_id=existing.id if existing else None)
+    session.add(row)
     session.add(Audit(actor=actor, action="agent_summary",
                       detail=f"{dataset.source_key} 版本 #{version.id} 提交智能体核验总结"))
     session.flush()
@@ -124,7 +123,7 @@ def _ground(summary: DatasetSummary, evidence: list[dict]) -> tuple[list[Evidenc
     for claim in summary.claims:
         ids_ok = all(evidence_id in supplied for evidence_id in claim.evidence_ids)
         quotes_ok = ids_ok and all(
-            any(quote in supplied[evidence_id] for evidence_id in claim.evidence_ids)
+            bool(quote.strip()) and any(quote in supplied[evidence_id] for evidence_id in claim.evidence_ids)
             for quote in claim.quotes)
         (grounded if ids_ok and quotes_ok else demoted).append(claim if ids_ok and quotes_ok else claim.text)
     uncertainty = list(summary.uncertainty) + [
@@ -158,7 +157,10 @@ def active_summary_executions(session, *, now=None) -> list[Enrichment]:
     lease = session.scalar(select(WorkerLease).where(
         WorkerLease.name == LEASE_NAME, WorkerLease.expires_at > now))
     if lease is None:
-        return []
+        from .models_jobs import Job
+        ids = list(session.scalars(select(Job.payload["id"].as_integer()).where(
+            Job.kind == "summary.run", Job.status == "running", Job.lease_until > now)))
+        return list(session.scalars(select(Enrichment).where(Enrichment.id.in_(ids), Enrichment.status == "generating"))) if ids else []
     return list(session.scalars(select(Enrichment).where(
         Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"),
         Enrichment.status == "generating",
@@ -180,11 +182,16 @@ def _leased_summary(session, enrichment_id: int, owner: str, execution_id: str |
     # Lock the lease before the row so a replacement worker cannot publish concurrently.
     _serialize_summary_write(session)
     from .worker import LEASE_NAME
-    lease = session.scalar(select(WorkerLease).where(
-        WorkerLease.name == LEASE_NAME, WorkerLease.owner == owner,
-        WorkerLease.expires_at > utcnow()).with_for_update())
-    if lease is None:
-        raise LeaseLost("总结执行租约已失效；等待下一工作进程恢复")
+    from .db import execution_guard
+    active_guard = execution_guard.get()
+    if active_guard is not None:
+        active_guard(session)
+    else:
+        lease = session.scalar(select(WorkerLease).where(
+            WorkerLease.name == LEASE_NAME, WorkerLease.owner == owner,
+            WorkerLease.expires_at > utcnow()).with_for_update())
+        if lease is None:
+            raise LeaseLost("总结执行租约已失效；等待下一工作进程恢复")
     row = session.get(Enrichment, enrichment_id, with_for_update=True)
     if not row or row.status != "generating":
         return None
@@ -287,12 +294,15 @@ def backfill_summaries(engine, *, limit: int = 200) -> dict:
     return {"submitted": submitted, "scanned": len(rows)}
 
 
-def process_next_summary(engine, *, llm=None, guard=lambda: None, owner=None) -> bool:
+def process_next_summary(engine, *, llm=None, guard=lambda: None, owner=None, enrichment_id: int | None = None) -> bool:
     guard()
     with session_scope(engine) as session:
-        row_id = session.scalar(select(Enrichment.id).where(
+        query = select(Enrichment.id).where(
             Enrichment.kind == "llm_summary", Enrichment.producer.like(PRODUCER_PREFIX + "%"),
-            Enrichment.status == "generating").order_by(Enrichment.id).limit(1))
+            Enrichment.status == "generating")
+        if enrichment_id is not None:
+            query = query.where(Enrichment.id == enrichment_id)
+        row_id = session.scalar(query.order_by(Enrichment.id).limit(1))
     if row_id is None:
         return False
     execute_summary(engine, row_id, llm=llm, guard=guard, owner=owner)

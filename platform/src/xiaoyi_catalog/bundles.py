@@ -172,3 +172,86 @@ def build_bundle(session, snapshot_id: int) -> Path:
     session.add(ResearchBundle(snapshot_id=snapshot_id,manifest=manifest,sha256=sha256_file(destination),storage_key=key))
     session.add(Audit(actor="bundle-service",action="bundle_created",detail=f"snapshot={snapshot_id}"))
     return destination
+
+
+def build_bundle_job(engine, snapshot_id: int, *, guard=lambda *args: None) -> dict:
+    """Compress outside SQL transactions, then atomically publish a checked immutable ZIP."""
+    import os
+    import tempfile
+    from .db import session_scope
+    from .asset_import import _store_file
+    from .pairing import _approved_asset
+    from .sample_engine import remember_operation
+    root=storage_root().resolve()
+    with session_scope(engine) as session:
+        snapshot=export_snapshot(session,snapshot_id)
+        existing=session.scalar(select(ResearchBundle).where(ResearchBundle.snapshot_id==snapshot_id))
+        if existing:
+            prior={"snapshot_id":snapshot_id,"sha256":existing.sha256,"storage_key":existing.storage_key}
+            entries=None
+        else:
+            prior=None
+            entries=[]
+            for frozen in snapshot.get("assets",[]):
+                asset=session.get(Asset,frozen["id"])
+                if not asset or asset.sha256!=frozen["sha256"] or asset.path!=frozen["path"] or not _approved_asset(session,asset):
+                    raise DownloadError("冻结资产与批准获取不一致")
+                entries.append({**frozen,"storage_key":asset.storage_key,"bundle_path":f"data/{asset.dataset_version_id}/{asset.path}"})
+            if not entries:
+                raise DownloadError("快照未冻结完整资产，不能构建研究包")
+    if prior:
+        path=(root/prior["storage_key"]).resolve()
+        if not path.is_relative_to(root) or not path.is_file() or sha256_file(path)!=prior["sha256"]:
+            raise DownloadError("已发布研究包校验失败，需要从备份恢复")
+        with session_scope(engine) as session:
+            guard(session)
+            remember_operation(session,guard,prior)
+        return prior
+    manifest={"format":"xiaoyi-research-bundle","format_version":1,"snapshot":snapshot,
+        "assets":[{k:v for k,v in entry.items() if k!="storage_key"} for entry in entries],
+        "evidence":[e for item in snapshot["datasets"] for e in item.get("evidence",[])],
+        "reports":snapshot.get("reports",[]),"enrichments":snapshot.get("enrichments",[]),
+        "reviews":snapshot.get("reviews",[]),"loader_version":"research-loader/1",
+        "reproduction":"Run python load_data.py before use; no network required."}
+    staging=root/"staging"/"bundles"
+    staging.mkdir(parents=True,exist_ok=True)
+    fd,name=tempfile.mkstemp(suffix=".partial",dir=staging)
+    os.close(fd)
+    temp=Path(name)
+    try:
+        with zipfile.ZipFile(temp,"w",compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json",json.dumps(manifest,ensure_ascii=False,indent=2))
+            archive.writestr("croissant.json",json.dumps(_croissant(manifest),ensure_ascii=False,indent=2))
+            archive.writestr("load_data.py",LOADER)
+            archive.writestr("README.txt","Run python load_data.py to verify every frozen asset before use.")
+            for entry in entries:
+                guard()
+                path=(root/entry["storage_key"]).resolve()
+                if not path.is_relative_to(root) or not path.is_file() or sha256_file(path)!=entry["sha256"]:
+                    raise DownloadError("冻结资产校验失败")
+                # Stream ZIP entries so cancellation can interrupt a single large file.
+                with path.open("rb") as src, archive.open(entry["bundle_path"],"w",force_zip64=True) as dst:
+                    while block:=src.read(1024*1024):
+                        guard()
+                        dst.write(block)
+        guard()
+        digest=sha256_file(temp)
+        key=_store_file(temp,digest,root)
+        with session_scope(engine) as session:
+            guard(session)
+            # Lock only publication, never compression or content hashing.
+            session.execute(select(Snapshot.id).where(Snapshot.id==snapshot_id).with_for_update())
+            if digest_json(export_snapshot(session,snapshot_id)) != digest_json(snapshot):
+                raise DownloadError("构建期间快照状态发生变化")
+            existing=session.scalar(select(ResearchBundle).where(ResearchBundle.snapshot_id==snapshot_id))
+            if existing:
+                result={"snapshot_id":snapshot_id,"sha256":existing.sha256,"storage_key":existing.storage_key}
+                remember_operation(session,guard,result)
+                return result
+            session.add(ResearchBundle(snapshot_id=snapshot_id,manifest=manifest,sha256=digest,storage_key=key))
+            session.add(Audit(actor="bundle-worker",action="bundle_created",detail=f"snapshot={snapshot_id}"))
+            result={"snapshot_id":snapshot_id,"sha256":digest,"storage_key":key}
+            remember_operation(session,guard,result)
+        return result
+    finally:
+        temp.unlink(missing_ok=True)

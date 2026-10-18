@@ -145,87 +145,14 @@ def process_local_import(engine, request_id: int, files: dict[str, str | Path]) 
 
 
 def derive_asset(session, parent_asset_id: int, operation: str = "deduplicate", actor: str = "reviewer") -> Asset:
-    from .pairing import _approved_asset
-    if operation != "deduplicate":
-        raise DownloadError("首期仅支持确定性的 CSV/TSV/JSONL 去重")
-    parent = session.get(Asset, parent_asset_id)
-    if parent is None or not _approved_asset(session, parent):
-        raise DownloadError("派生输入必须来自已完整批准的获取")
-    root = storage_root()
-    source = (root / parent.storage_key).resolve()
-    if not source.is_relative_to(root) or not source.is_file() or sha256_file(source) != parent.sha256:
-        raise DownloadError("派生输入校验失败")
-    suffix = Path(parent.path).suffix.lower()
-    if suffix not in {".csv", ".tsv", ".jsonl", ".ndjson"}:
-        raise DownloadError("该格式不支持确定性去重")
-    recipe = {"operation": operation, "producer": "deduplicate/1", "parameters": {"keep": "first", "row_equality": "canonical_json"},
-              "inputs": [{"asset_id": parent.id, "sha256": parent.sha256, "dataset_version_id": parent.dataset_version_id}]}
-    revision = "derived-" + digest_json(recipe)
-    base = session.get(DatasetVersion, parent.dataset_version_id)
-    existing_version = session.scalar(select(DatasetVersion).where(DatasetVersion.dataset_id == base.dataset_id, DatasetVersion.revision == revision))
-    if existing_version:
-        return session.scalar(select(Asset).where(Asset.dataset_version_id == existing_version.id))
-    staging = root / "staging" / "derived"
-    staging.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(suffix=suffix, dir=staging)
-    os.close(fd)
-    output = Path(name)
-    input_rows = output_rows = 0
-    seen = set()
-    try:
-        with source.open(encoding="utf-8", newline="") as inp, output.open("w", encoding="utf-8", newline="") as out:
-            if suffix in {".csv", ".tsv"}:
-                reader = csv.DictReader(inp, delimiter="\t" if suffix == ".tsv" else ",")
-                if not reader.fieldnames or len(set(reader.fieldnames)) != len(reader.fieldnames):
-                    raise DownloadError("CSV 列名缺失或重复")
-                writer = csv.DictWriter(out, fieldnames=reader.fieldnames, delimiter="\t" if suffix == ".tsv" else ",", lineterminator="\n")
-                writer.writeheader()
-                rows = reader
-            else:
-                rows = (json.loads(line) for line in inp if line.strip())
-                writer = None
-            for row in rows:
-                if isinstance(row, dict) and None in row:
-                    raise DownloadError("CSV 行列数量与表头不符")
-                input_rows += 1
-                if input_rows > int(os.environ.get("XIAOYI_DERIVE_MAX_ROWS", "1000000")):
-                    raise DownloadError("派生输入超过配置的处理行数上限")
-                canonical = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-                digest = hashlib.sha256(canonical.encode()).digest()
-                if digest in seen:
-                    continue
-                seen.add(digest)
-                if writer:
-                    writer.writerow(row)
-                else:
-                    out.write(canonical + "\n")
-                output_rows += 1
-        size, digest = output.stat().st_size, sha256_file(output)
-        stored = session.scalar(select(func.coalesce(func.sum(Asset.size_bytes), 0))) or 0
-        if stored + size > int(os.environ.get("XIAOYI_STORAGE_QUOTA_BYTES", str(100*1024**3))):
-            raise DownloadError("派生文件超过存储配额")
-        key = _store_file(output, digest, root)
-        metadata = deepcopy(base.metadata_json)
-        metadata.update(size_rows=output_rows, size_bytes=size, derivation=recipe, downloads=0, likes=0,
-                        card_text=f"# Deterministic derived dataset\nProducer: deduplicate/1\nInput asset: {parent.id}\nInput SHA-256: {parent.sha256}\nRows: {output_rows}\nSource card is available on parent version {base.id}.")
-        version = DatasetVersion(dataset_id=base.dataset_id, revision=revision, kind="derived",
-            parent_version_id=base.id, metadata_json=metadata, provenance_status="verified")
-        session.add(version)
-        session.flush()
-        asset = Asset(dataset_version_id=version.id, download_request_id=parent.download_request_id,
-            path=parent.path, size_bytes=size, sha256=digest, storage_key=key, source_url=parent.source_url,
-            origin="derived", parent_asset_ids=[parent.id], recipe=recipe)
-        session.add(asset)
-        session.flush()
-        report = profile_file(root/key, parent.path)
-        report["derivation"] = {"input_rows": input_rows, "output_rows": output_rows, "removed_rows": input_rows-output_rows}
-        session.add(QualityReport(asset_id=asset.id, dataset_version_id=version.id, value=report))
-        session.add(Evidence(dataset_id=version.dataset_id, dataset_version_id=version.id, kind="derivation",
-            excerpt=json.dumps(recipe, ensure_ascii=False), location=f"asset:{parent.id}@sha256:{parent.sha256}"))
-        session.add(Audit(actor=actor, action="asset_derived", detail=f"asset={asset.id}; parent={parent.id}; version={version.id}"))
-        return asset
-    finally:
-        output.unlink(missing_ok=True)
+    """Compatibility API; workers use execute_derive to avoid long transactions."""
+    from .derivation import derive_in_session
+    return derive_in_session(session,parent_asset_id,operation,actor)
+
+
+def execute_derive(engine, parent_asset_id: int, operation: str = "deduplicate", guard=None, actor=None):
+    from .derivation import execute_derive as execute
+    return execute(engine,parent_asset_id,operation,guard=guard,actor=actor)
 
 
 
@@ -281,17 +208,19 @@ def main(argv=None) -> int:
                 result = {"request_id": request.id, "status": request.status,
                           "next": "在策展工作台核验文件清单并人工批准，再执行 import"}
             elif args.command == "derive":
-                asset = derive_asset(session, args.asset, args.operation, actor.username)
-                result = {"asset_id": asset.id, "dataset_version_id": asset.dataset_version_id,
-                          "sha256": asset.sha256, "origin": asset.origin}
+                from .api_jobs import submit_public_job
+                from .jobs import to_dict
+                result = to_dict(submit_public_job(session,"asset.derive",{"asset_id":args.asset,"operation":args.operation},actor))
         if args.command == "import":
             files = json.loads(args.files.read_text(encoding="utf-8"))
             if not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
                 raise DownloadError("--files 必须是清单路径到本机路径的 JSON 对象")
-            ident = process_local_import(engine, args.request, files)
+            from .jobs import enqueue,to_dict
             with session_scope(engine) as session:
-                session.add(Audit(actor=actor.username, action="local_import_cli", detail=f"request={ident}"))
-            result = {"request_id": ident, "status": "completed"}
+                request=session.get(DownloadRequest,args.request)
+                if not request or request.manifest.get("acquisition")!="local" or request.status not in {"approved","running","completed"} or request.approved_hash!=request.manifest_hash:
+                    raise DownloadError("本地导入必须先获得人工批准")
+                result=to_dict(enqueue(session,"asset.import",{"request_id":args.request,"files":files},actor,f"asset.import:{args.request}"))
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (DownloadError, ValueError, OSError, KeyError) as exc:

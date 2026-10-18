@@ -173,7 +173,10 @@ test('host session switch and reset revoke old scan callbacks without writing in
   expect((await saved(page,'demo-host-001')).scanConfig.autoEnabled).toBe(false);
   await navigate(frame,'数据接入');await frame.getByTestId('scan-start').click();
   await expect.poll(async()=>(await saved(page,'demo-host-001')).scans[0]?.status).toBe('running');
-  await page.locator('#reset').click();await expect.poll(async()=>(await saved(page,'demo-host-001')).scans).toEqual([]);
+  await page.locator('#reset').click();
+  // Reset clears storage before the next React effect persists the initial state.
+  // A missing value is still pending, not a successfully reset scan list.
+  await expect.poll(async()=>(await saved(page,'demo-host-001'))?.scans).toEqual([]);
   const resetState=await saved(page,'demo-host-001');await page.clock.runFor(65000);
   expect(await saved(page,'demo-host-001')).toEqual(resetState);expect(resetState.assets).toHaveLength(12);expect(resetState.scanConfig.autoEnabled).toBe(false);
   expect(errors).toEqual([]);

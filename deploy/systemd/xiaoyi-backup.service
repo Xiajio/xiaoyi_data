@@ -1,0 +1,19 @@
+[Unit]
+Description=Xiaoyi daily quiesced local and offsite backup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# Edit to match XIAOYI_OFFSITE_MOUNT; never run on an unmounted fallback folder.
+RequiresMountsFor=/mnt/xiaoyi-offsite
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/xiaoyi/backup-maintenance.env
+ExecStart=/bin/bash /srv/xiaoyi_data/deploy/backup-maintenance.sh
+# Allow large assets to finish. SIGTERM runs the script's service-restoration trap.
+TimeoutStartSec=infinity
+TimeoutStopSec=600
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal

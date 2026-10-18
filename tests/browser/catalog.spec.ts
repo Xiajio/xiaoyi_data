@@ -93,9 +93,9 @@ test('pairing review, freeze, approval and export run the full chain in the UI',
 
   await nav(page, '运行与审计');
   await page.locator('.cat-tabs').getByRole('button', { name: '操作审计' }).click();
-  await expect(page.locator('table')).toContainText('pairing_review');
-  await expect(page.locator('table')).toContainText('snapshot_freeze');
-  await expect(page.locator('table')).toContainText('snapshot_approve');
+  await expect(page.getByRole('table', { name: '操作审计', exact: true })).toContainText('pairing_review');
+  await expect(page.getByRole('table', { name: '操作审计', exact: true })).toContainText('snapshot_freeze');
+  await expect(page.getByRole('table', { name: '操作审计', exact: true })).toContainText('snapshot_approve');
 });
 
 test('catalog mode shows a clear error when the service is unreachable', async ({ page }) => {

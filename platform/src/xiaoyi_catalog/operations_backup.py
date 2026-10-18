@@ -25,6 +25,7 @@ class BackupError(ValueError):
 
 FORMAT = "xiaoyi-catalog-backup"
 FORMAT_VERSION = 1
+MAX_MANIFEST_BYTES = 512 * 1024 * 1024
 
 
 def _quiesced(value: bool) -> None:
@@ -250,7 +251,7 @@ def verify_backup(backup: str | Path) -> dict:
     path = root / "manifest.json"
     _links_forbidden(path)
     try:
-        if path.stat().st_size > 16 * 1024 * 1024:
+        if path.stat().st_size > MAX_MANIFEST_BYTES:
             raise BackupError("备份清单超过限制")
         manifest = json.loads(path.read_text(encoding="utf-8"))
         if manifest.get("format") != FORMAT or manifest.get("format_version") != FORMAT_VERSION or manifest.get("quiesced") is not True:
@@ -349,6 +350,8 @@ def main(argv=None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     backup = commands.add_parser("backup")
     restore = commands.add_parser("restore")
+    verify = commands.add_parser("verify")
+    verify.add_argument("--backup", required=True)
     for command in (backup, restore):
         command.add_argument("--db", default=os.getenv("XIAOYI_CATALOG_DB", "./data/catalog.db"))
         command.add_argument("--storage", default=os.getenv("XIAOYI_STORAGE_ROOT", "./data/assets"))
@@ -358,7 +361,10 @@ def main(argv=None) -> int:
     restore.add_argument("--backup", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "backup":
+        if args.command == "verify":
+            manifest = verify_backup(args.backup)
+            print(json.dumps({"database_kind": manifest["database"]["kind"], "files_verified": len(manifest["files"])}))
+        elif args.command == "backup":
             path = create_backup(args.db, args.storage, args.destination, quiesced=args.quiesced, checkpoint_path=args.checkpoint)
             print(f"备份完成：{path}")
         else:

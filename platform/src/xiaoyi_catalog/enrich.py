@@ -120,15 +120,18 @@ def enrich_version(session, version: DatasetVersion) -> list[Enrichment]:
     item = version_to_dict(session, version)
     item.setdefault("source_modified_at", None)
     evidence_ids = _card_evidence_id(session, version.dataset_id, version.id)
+    previous = {kind: session.scalar(select(Enrichment.id).where(
+        Enrichment.dataset_version_id == version.id, Enrichment.kind == kind)
+        .order_by(Enrichment.id.desc()).limit(1)) for kind in ("schema", "quality")}
     # Retain reviewed/historical outputs and preserve references from reviews and snapshots.
     for old in session.scalars(select(Enrichment).where(Enrichment.dataset_version_id == version.id,
             Enrichment.kind.in_(["schema", "quality"]), Enrichment.status == "candidate")):
         old.status = "superseded"
     entries = [
         Enrichment(dataset_id=version.dataset_id, dataset_version_id=version.id, kind="schema", producer=PRODUCER,
-                   value=schema_summary(item["card_text"]), confidence="", evidence_ids=evidence_ids),
+                   value=schema_summary(item["card_text"]), confidence="", evidence_ids=evidence_ids, parent_enrichment_id=previous["schema"]),
         Enrichment(dataset_id=version.dataset_id, dataset_version_id=version.id, kind="quality", producer=PRODUCER,
-                   value=quality_signals(SimpleNamespace(**item)), confidence="", evidence_ids=evidence_ids),
+                   value=quality_signals(SimpleNamespace(**item)), confidence="", evidence_ids=evidence_ids, parent_enrichment_id=previous["quality"]),
     ]
     session.add_all(entries)
     return entries

@@ -159,11 +159,22 @@ def register_platform(app, engine):
     @app.get("/api/snapshots/{snapshot_id}/bundle")
     def bundle(snapshot_id:int,request:Request):
         principal(request)
+        from .models_assets import ResearchBundle
+        from .pairing import export_snapshot
         try:
             with session_scope(engine) as session:
-                path=build_bundle(session,snapshot_id)
-            return FileResponse(path,media_type="application/zip",filename=f"research-{snapshot_id}.zip")
-        except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+                export_snapshot(session,snapshot_id)
+                value=session.scalar(select(ResearchBundle).where(ResearchBundle.snapshot_id==snapshot_id))
+                if value is None:
+                    raise HTTPException(409,{"code":"bundle_not_ready","message":"请先提交研究包构建任务"})
+                root=storage_root().resolve()
+                path=(root/value.storage_key).resolve()
+                if not path.is_relative_to(root) or not path.is_file():
+                    raise HTTPException(409,"研究包文件缺失，需要从备份恢复")
+                digest=value.sha256
+            return FileResponse(path,media_type="application/zip",filename=f"research-{snapshot_id}.zip",headers={"ETag":digest})
+        except ValueError as exc:
+            raise HTTPException(400,str(exc)) from exc
 
     @app.post("/api/datasets/register",status_code=201)
     def manual(payload:dict,request:Request):
@@ -180,13 +191,18 @@ def register_platform(app, engine):
     def operations(request:Request):
         require(request,{"reviewer","admin"})
         from .models_runtime import AgentRun
+        from .operations import queue_status
         import shutil
         with session_scope(engine) as session:
             return {"tasks":dict(session.execute(select(AgentRun.status,func.count()).group_by(AgentRun.status)).all()),
                     "downloads":dict(session.execute(select(DownloadRequest.status,func.count()).group_by(DownloadRequest.status)).all()),
                     "review_backlog":session.scalar(select(func.count()).select_from(Enrichment).where(Enrichment.status.in_(["candidate","needs-info"]))),
                     "asset_bytes":session.scalar(select(func.coalesce(func.sum(Asset.size_bytes),0))),
-                    "disk_free_bytes":shutil.disk_usage(storage_root()).free}
+                    "disk_free_bytes":shutil.disk_usage(storage_root()).free,
+                    "as_of":utcnow().isoformat(), "queues":queue_status(session),
+                    "approval_waiting": {
+                        "research_runs":session.scalar(select(func.count()).select_from(AgentRun).where(AgentRun.status=="waiting_approval")),
+                        "download_requests":session.scalar(select(func.count()).select_from(DownloadRequest).where(DownloadRequest.status=="pending"))}}
 
 
     @app.get("/api/assets/{asset_id}/preview")
@@ -210,13 +226,15 @@ def register_platform(app, engine):
         except (KeyError, ValueError) as exc:
             raise HTTPException(400,str(exc)) from exc
 
-    @app.post("/api/assets/{asset_id}/derive",status_code=201)
+    @app.post("/api/assets/{asset_id}/derive",status_code=202)
     def derive(asset_id:int,payload:dict,request:Request):
         actor=require(request,{"reviewer","admin"},human=True)
-        from .asset_import import derive_asset
-        from .downloads import asset_to_dict
+        from .api_jobs import submit_public_job
+        from .jobs import to_dict
         try:
+            if set(payload)-{"operation"}:
+                raise ValueError("派生参数包含不支持字段")
             with session_scope(engine) as session:
-                return asset_to_dict(derive_asset(session,asset_id,payload.get("operation","deduplicate"),actor.username))
+                return to_dict(submit_public_job(session,"asset.derive",{"asset_id":asset_id,"operation":payload.get("operation","deduplicate")},actor))
         except ValueError as exc:
             raise HTTPException(400,str(exc)) from exc

@@ -186,5 +186,67 @@ def main() -> None:
     mcp.run()
 
 
+@mcp.tool()
+def job_submit(kind: str, payload: dict, idempotency_key: str | None = None) -> dict:
+    """Queue supported processing of approved assets; cannot grant approval or submit code."""
+    from .api_jobs import submit_public_job
+    from .jobs import to_dict
+    with _authorized_session(write=True) as (session,actor):
+        return to_dict(submit_public_job(session,kind,payload,actor,idempotency_key))
+
+@mcp.tool()
+def job_status(job_id: int) -> dict:
+    """Read a background task owned by this identity."""
+    from .jobs import managed,to_dict
+    with _authorized_session() as (session,actor):
+        return to_dict(managed(session,job_id,actor))
+
+@mcp.tool()
+def dataset_build_create(recipe: dict) -> dict:
+    """Queue a reproducible dataset build; publishing still requires a human reviewer."""
+    from .api_builds import submit_build_job
+    with _authorized_session(write=True) as (session,actor):
+        return submit_build_job(session,recipe,actor)
+
+@mcp.tool()
+def dataset_build_status(build_id: int) -> dict:
+    """Read a build and its immutable manifest; never approve or alter it."""
+    from .models_samples import DatasetBuild
+    from .api_builds import public_build
+    with _authorized_session() as (session,_actor):
+        build=session.get(DatasetBuild,build_id)
+        if build is None:
+            raise ValueError("数据构建不存在")
+        return {**public_build(build),"manifest":build.manifest}
+
+
+@mcp.tool()
+def experiment_import(spec: dict) -> dict:
+    """Queue classification predictions against exact builds and a fixed evaluation protocol."""
+    from .api_builds import submit_experiment_job
+    with _authorized_session(write=True) as (session,actor):
+        return submit_experiment_job(session,spec,actor)
+
+@mcp.tool()
+def experiments_compare(experiment_ids: list[int]) -> dict:
+    """Compare completed experiments with the same model, budget, seed and evaluation set."""
+    from .experiments import compare_experiments
+    with _authorized_session() as (session,_actor):
+        return compare_experiments(session,experiment_ids)
+
+@mcp.tool()
+def job_cancel(job_id: int) -> dict:
+    """Request cancellation of this identity's background task, preserving history."""
+    from .jobs import cancel,to_dict
+    with _authorized_session(write=True) as (session,actor):
+        return to_dict(cancel(session,job_id,actor))
+
+@mcp.tool()
+def job_retry(job_id: int) -> dict:
+    """Retry supported failed or cancelled work without changing its inputs."""
+    from .jobs import retry,to_dict
+    with _authorized_session(write=True) as (session,actor):
+        return to_dict(retry(session,job_id,actor))
+
 if __name__ == "__main__":
     main()

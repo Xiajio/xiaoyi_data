@@ -1,0 +1,5 @@
+# Load all four release images first; the release tag comes from artifact/release.txt.
+# Default compose.yaml keeps the original upstream digest unchanged.
+services:
+  database:
+    image: xiaoyi-catalog-database:${XIAOYI_RELEASE:?Set the verified release.txt tag}

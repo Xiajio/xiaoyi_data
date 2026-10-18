@@ -9,6 +9,7 @@ export const stageLabel = (value: string) => ({ queued: '等待执行', planning
 export const splitList = (value: string) => value.split(/[,，\n]/).map(v => v.trim()).filter(Boolean);
 export const formatBytes = (value?: number | null) => value == null ? '体积未知' : value < 1024 ? `${value} B` : value < 1024 ** 2 ? `${(value / 1024).toFixed(1)} KB` : value < 1024 ** 3 ? `${(value / 1024 ** 2).toFixed(1)} MB` : `${(value / 1024 ** 3).toFixed(1)} GB`;
 const STATUS: Record<string, [string, string]> = {
+  ready: ['待发布', 'warn'], published: ['已发布', 'good'], succeeded: ['已完成', 'good'],
   confirmed: ['已确认', 'good'], approved: ['已批准', 'good'], rejected: ['已驳回', 'bad'], invalidated: ['已失效', 'bad'],
   pending: ['待审批', 'warn'], candidate: ['待核验', 'warn'], completed: ['完成', 'good'], failed: ['失败', 'bad'], running: ['运行中', 'warn'],
   interrupted: ['已中断', 'warn'], queued: ['排队中', ''], cancelled: ['已取消', ''], 'needs-info': ['待补资料', 'warn'], corrected: ['已更正', 'good'],

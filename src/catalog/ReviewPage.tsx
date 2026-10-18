@@ -24,7 +24,7 @@ function ReviewCard({ api, item, role, agentEnabled, onReviewed, onAgentCandidat
   const review = async (decision: ReviewDecision) => { setError(''); let corrected: Record<string, unknown> | undefined;
     if ((decision === 'corrected' || decision === 'needs-info' || decision === 'rejected') && !note.trim()) { setError('请填写核验说明，记录更正、驳回或待补资料的依据。'); return; }
     if (decision === 'corrected') { try { const parsed: unknown = JSON.parse(value); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(); corrected = parsed as Record<string, unknown>; } catch { setError('更正内容必须是有效的 JSON 对象。'); return; } }
-    setActing(true); try { await api.reviewEnrichment(item.id, decision, note, corrected); onToast(`${({ confirmed: '已确认', rejected: '已驳回', 'needs-info': '已标记待补资料', corrected: '已更正' })[decision]} ${item.dataset || ''} 的整理候选`); onReviewed(); } catch (reason) { setError(errorText(reason)); } finally { setActing(false); }
+    setActing(true); try { await api.reviewEnrichment(item.id, decision, note, corrected, item.content_hash); onToast(`${({ confirmed: '已确认', rejected: '已驳回', 'needs-info': '已标记待补资料', corrected: '已更正' })[decision]} ${item.dataset || ''} 的整理候选`); onReviewed(); } catch (reason) { setError(errorText(reason)); } finally { setActing(false); }
   };
   const askAgent = async () => {
     setError('');

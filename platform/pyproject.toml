@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27", "setuptools>=68", "wheel>=0.45"]
 embed = ["sentence-transformers>=3.0"]
 
 [tool.setuptools.packages.find]

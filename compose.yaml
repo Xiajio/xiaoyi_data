@@ -1,51 +1,130 @@
+x-app: &app
+  image: xiaoyi-catalog-api:${XIAOYI_RELEASE:-dev}
+  build: {context: ., dockerfile: deploy/Dockerfile.api, target: runtime}
+  init: true
+  restart: unless-stopped
+  environment: &catalog-env
+    XIAOYI_CATALOG_DB: postgresql+psycopg://catalog:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@database:5432/${POSTGRES_DB:-catalog}
+    XIAOYI_STORAGE_ROOT: /data/assets
+    XIAOYI_IMPORT_ROOT: /data/import
+    XIAOYI_STORAGE_QUOTA_BYTES: ${XIAOYI_STORAGE_QUOTA_BYTES:-107374182400}
+    XIAOYI_DOWNLOAD_MAX_BYTES: ${XIAOYI_DOWNLOAD_MAX_BYTES:-10737418240}
+    XIAOYI_CATALOG_CORS: ${XIAOYI_CATALOG_CORS:-http://localhost:8080}
+    XIAOYI_SECURE_COOKIE: ${XIAOYI_SECURE_COOKIE:-0}
+    XIAOYI_CATALOG_EMBED: "0"
+    XIAOYI_AUTO_MIGRATE: "0"
+    XIAOYI_SCHEDULES_ENABLED: ${XIAOYI_SCHEDULES_ENABLED:-1}
+    XIAOYI_CATALOG_AUTO_SUMMARY: ${XIAOYI_CATALOG_AUTO_SUMMARY:-1}
+    HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+    HF_TOKEN: ${HF_TOKEN:-}
+    XIAOYI_LLM_BASE_URL: ${XIAOYI_LLM_BASE_URL:-}
+    XIAOYI_LLM_MODEL: ${XIAOYI_LLM_MODEL:-}
+    XIAOYI_LLM_API_KEY: ${XIAOYI_LLM_API_KEY:-}
+  volumes: [catalog-assets:/data/assets, "./data/import:/data/import:ro"]
+  logging: &logs
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+  stop_grace_period: 60s
+
 services:
   database:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    restart: unless-stopped
     environment:
       POSTGRES_USER: catalog
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: catalog
+      POSTGRES_DB: ${POSTGRES_DB:-catalog}
     volumes: [catalog-db:/var/lib/postgresql/data]
+    mem_limit: 4g
+    cpus: 2
+    logging: *logs
     healthcheck:
-      test: [CMD-SHELL, "pg_isready -U catalog"]
+      test: [CMD-SHELL, "pg_isready -U catalog -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
-  api:
-    build: {context: ., dockerfile: deploy/Dockerfile.api}
-    environment: &catalog-env
-      XIAOYI_CATALOG_DB: postgresql+psycopg://catalog:${POSTGRES_PASSWORD}@database:5432/catalog
-      XIAOYI_STORAGE_ROOT: /data/assets
-      XIAOYI_IMPORT_ROOT: /data/import
-      XIAOYI_STORAGE_QUOTA_BYTES: ${XIAOYI_STORAGE_QUOTA_BYTES:-107374182400}
-      XIAOYI_DOWNLOAD_MAX_BYTES: ${XIAOYI_DOWNLOAD_MAX_BYTES:-10737418240}
-      XIAOYI_CATALOG_CORS: ${XIAOYI_CATALOG_CORS:-http://localhost:8080}
-      XIAOYI_SECURE_COOKIE: ${XIAOYI_SECURE_COOKIE:-0}
-      XIAOYI_CATALOG_EMBED: "0"
-      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
-      HF_TOKEN: ${HF_TOKEN:-}
-      XIAOYI_LLM_BASE_URL: ${XIAOYI_LLM_BASE_URL:-}
-      XIAOYI_LLM_MODEL: ${XIAOYI_LLM_MODEL:-}
-      XIAOYI_LLM_API_KEY: ${XIAOYI_LLM_API_KEY:-}
-    volumes: [catalog-assets:/data/assets, "./data/import:/data/import:ro"]
+  migrate:
+    <<: *app
+    restart: "no"
+    command: [python, -m, xiaoyi_catalog.operations, migrate]
     depends_on:
       database: {condition: service_healthy}
+    mem_limit: 1g
+    cpus: 1
+  api:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      database: {condition: service_healthy}
+    mem_limit: 2g
+    cpus: 1
     healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:5280/api/health')"]
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:5280/api/ready', timeout=5)"]
       interval: 10s
-      retries: 10
-  worker:
-    build: {context: ., dockerfile: deploy/Dockerfile.api}
-    command: [python, -m, xiaoyi_catalog.worker]
-    environment: *catalog-env
-    volumes: [catalog-assets:/data/assets, "./data/import:/data/import:ro"]
+      timeout: 7s
+      start_period: 20s
+      retries: 6
+  worker-interactive:
+    <<: *app
+    command: [python, -m, xiaoyi_catalog.worker, --queue, interactive]
     depends_on:
       api: {condition: service_healthy}
+    mem_limit: 2g
+    cpus: 1
+    healthcheck:
+      test: [CMD, python, -m, xiaoyi_catalog.operations, worker-health, --queue, interactive]
+      interval: 20s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+  worker-io:
+    <<: *app
+    command: [python, -m, xiaoyi_catalog.worker, --queue, io]
+    depends_on:
+      api: {condition: service_healthy}
+    mem_limit: 2g
+    cpus: 1
+    healthcheck:
+      test: [CMD, python, -m, xiaoyi_catalog.operations, worker-health, --queue, io]
+      interval: 20s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+  worker-cpu:
+    <<: *app
+    command: [python, -m, xiaoyi_catalog.worker, --queue, cpu]
+    depends_on:
+      api: {condition: service_healthy}
+    mem_limit: 8g
+    cpus: 4
+    stop_grace_period: 300s
+    healthcheck:
+      test: [CMD, python, -m, xiaoyi_catalog.operations, worker-health, --queue, cpu]
+      interval: 20s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
   web:
+    image: xiaoyi-catalog-web:${XIAOYI_RELEASE:-dev}
     build: {context: ., dockerfile: deploy/Dockerfile.web}
+    restart: unless-stopped
     ports: ["127.0.0.1:8080:80"]
     depends_on:
       api: {condition: service_healthy}
+    mem_limit: 256m
+    cpus: 0.5
+    logging: *logs
+  ops:
+    image: xiaoyi-catalog-ops:${XIAOYI_RELEASE:-dev}
+    build: {context: ., dockerfile: deploy/Dockerfile.api, target: ops}
+    profiles: [ops]
+    environment: *catalog-env
+    volumes: [catalog-assets:/data/assets, "./data/import:/data/import:ro", "./backups:/backups", "./recovery:/recovery"]
+    command: [python, -m, xiaoyi_catalog.operations, check]
+    mem_limit: 2g
+    cpus: 1
+    logging: *logs
+
 volumes:
   catalog-db:
   catalog-assets:

@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily Xiaoyi backup maintenance window
+
+[Timer]
+# Host local time; set the server timezone and agree this window with users.
+OnCalendar=*-*-* 02:30:00
+AccuracySec=1min
+# Do not unexpectedly stop writers after a missed window during boot.
+Persistent=false
+Unit=xiaoyi-backup.service
+
+[Install]
+WantedBy=timers.target

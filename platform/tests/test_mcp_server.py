@@ -22,7 +22,7 @@ from conftest import FakeAdapter, make_raw
 
 EXPECTED_TOOLS = {"dataset_search", "dataset_evidence", "pairing_propose", "snapshot_status", "snapshot_export",
                   "agent_run_create", "agent_run_status", "agent_run_cancel", "agent_run_retry", "dataset_files",
-                  "download_request", "snapshot_bundle"}
+                  "download_request", "snapshot_bundle", "job_submit", "job_status", "dataset_build_create", "dataset_build_status", "experiment_import", "experiments_compare", "job_cancel", "job_retry"}
 
 
 def test_registers_exactly_the_contract_tools():
@@ -47,7 +47,7 @@ def seeded_db(tmp_path, monkeypatch):
 class TestToolCalls:
     def test_search_evidence_and_pairing_flow(self, seeded_db):
         results = mcp_server.dataset_search({"modalities": ["text"], "languages": ["zh"]}, query="情感")
-        assert results["ranking"] == "downloads"
+        assert results["ranking"] == "keyword"
         assert results["results"][0]["source_key"] == "a/zh-sentiment"
         dataset_id = results["results"][0]["id"]
         assert results["results"][0]["dataset_version_id"] is not None

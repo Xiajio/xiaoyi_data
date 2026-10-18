@@ -138,19 +138,19 @@ def assets_for_version(session,version_id):
             "reports":[{"id":r.id,"asset_id":r.asset_id,"value":public_report(r.value)} for r in reports],
             "overlap":split_overlap([(names.get(r.asset_id,str(r.asset_id)),r.value) for r in reports])}
 
-def process_next_download(engine, *, fetcher=None, guard=None) -> bool:
+def process_next_download(engine, *, fetcher=None, guard=None, request_id=None) -> bool:
     # One worker is the supported deployment; claim is still compare-and-set for accidental overlap.
     if guard: guard()
     now=utcnow()
     with session_scope(engine) as session:
-        candidate=session.scalar(select(DownloadRequest).where(func.coalesce(DownloadRequest.manifest["acquisition"].as_string(), "huggingface") != "local", or_(DownloadRequest.status=="approved",
-            (DownloadRequest.status=="running") & (DownloadRequest.lease_until<now))).order_by(DownloadRequest.id).limit(1))
+        candidate=session.scalar(select(DownloadRequest).where(True if request_id is None else DownloadRequest.id == request_id, func.coalesce(DownloadRequest.manifest["acquisition"].as_string(), "huggingface") != "local", or_(DownloadRequest.status=="approved",
+            (DownloadRequest.status=="running") & (True if request_id is not None else DownloadRequest.lease_until<now))).order_by(DownloadRequest.id).limit(1))
         if not candidate:
             return False
         ident=candidate.id
         result=session.execute(update(DownloadRequest).where(DownloadRequest.id==ident,
             func.coalesce(DownloadRequest.manifest["acquisition"].as_string(), "huggingface") != "local",
-            or_(DownloadRequest.status=="approved",(DownloadRequest.status=="running") & (DownloadRequest.lease_until<now)))
+            or_(DownloadRequest.status=="approved",(DownloadRequest.status=="running") & (True if request_id is not None else DownloadRequest.lease_until<now)))
             .values(status="running",lease_until=now+timedelta(hours=1)).execution_options(synchronize_session=False))
         if not result.rowcount:
             return False
