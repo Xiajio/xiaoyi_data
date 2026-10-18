@@ -136,16 +136,16 @@ function SummaryBoard({ api, role, go, onToast }: { api: CatalogApi; role: Role;
   const done = data.counts.candidate + data.counts.confirmed + data.counts.corrected;
   const total = done + data.counts.generating + data.counts.failed;
   const running = data.running ?? [];
-  const pct = total > 0 ? Math.round(done / total * 100) : 100;
+  const pct = total > 0 ? Math.round(done / total * 100) : null;
   return <div className="pp-body" data-testid="summary-board">
     {board.error ? <div className="pp-note pp-note-warning" role="alert"><span>刷新失败：{board.error}。下方保留上次成功读取的数据。</span><button className="btn" onClick={board.reload}>重试</button></div> : null}
     <div className="pp-stats ov-stats ops-board-stats">
       <div className="pp-stat"><span className="muted">排队与处理中</span><div className={data.counts.generating > 0 ? 'pp-stat-alert' : ''}><strong data-testid="summary-generating">{data.counts.generating}</strong><span>条</span></div><small>处理 {data.counts.running ?? 0} 条 · 排队 {data.counts.queued ?? data.counts.generating} 条</small></div>
       <div className="pp-stat"><span className="muted">已生成</span><div><strong>{done}</strong><span>条</span></div><small>其中 {data.counts.candidate} 条待人工核验</small></div>
       <div className="pp-stat"><span className="muted">失败</span><div><strong>{data.counts.failed}</strong><span>条</span></div><small>可在下方重试</small></div>
-      <div className="pp-stat"><span className="muted">完成率</span><div><strong>{pct}<span>%</span></strong></div><small>共 {total} 条总结任务</small></div>
+      <div className="pp-stat"><span className="muted">完成率</span><div><strong>{pct === null ? '—' : <>{pct}<span>%</span></>}</strong></div><small>共 {total} 条总结任务</small></div>
     </div>
-    <div className="ops-progress" aria-label={`完成率 ${pct}%`}><span style={{ width: `${pct}%` }} /></div>
+    {pct !== null ? <div className="ops-progress" aria-label={`完成率 ${pct}%`}><span style={{ width: `${pct}%` }} /></div> : <p className="pp-footnote">尚无总结任务，完成率暂不可计算。</p>}
     {running.map(item => <section className="panel ops-running" data-testid="summary-running" key={item.id}>
       <div className="ops-running-head">{!board.error ? <span className="ops-pulse" aria-hidden="true" /> : null}<div><h3>{board.error ? '上次记录处理' : '正在处理'}：{item.dataset}</h3><p className="muted">版本 #{item.dataset_version_id} · 第 {item.attempts} 次尝试 · 开始于 {dateTime(item.started_at)}</p></div></div>
     </section>)}

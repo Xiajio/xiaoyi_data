@@ -165,7 +165,7 @@ export class CatalogApi {
   builds() { return this.request<{ items: DatasetBuild[] }>('/api/builds?order=desc&limit=100'); }
   createBuild(recipe: Record<string, unknown>) { return this.post<{ build_id: Id; job_id: Id }>('/api/builds', { recipe }); }
   buildManifest(id: Id) { return this.request<Record<string, unknown>>(`/api/builds/${pathId(id)}/manifest`); }
-  buildProfiles(id: Id) { return this.request<{ items: Record<string, unknown>[] }>(`/api/builds/${pathId(id)}/profiles`); }
+  buildProfiles(id: Id, afterId: Id = 0) { return this.request<{ items: Record<string, unknown>[] }>(`/api/builds/${pathId(id)}/profiles?after_id=${pathId(afterId)}&limit=50`); }
   publishBuild(id: Id, manifestHash: string) { return this.post<DatasetBuild>(`/api/builds/${pathId(id)}/publish`, { manifest_hash: manifestHash }); }
   mineBuild(id: Id) { return this.post<{ job_id: Id }>(`/api/builds/${pathId(id)}/mining`, { build_id: Number(id) }); }
 
