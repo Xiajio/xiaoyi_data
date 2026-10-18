@@ -223,6 +223,12 @@ def copy_catalog(source, target, metadata: MetaData, summaries: dict, *, migrati
             while rows := result.fetchmany(500):
                 records = [dict(row) for row in rows]
                 for record in records:
+                    # Legacy SQLite stores application timestamps as naive UTC.
+                    # Bind an explicit instant before PostgreSQL can interpret a
+                    # naive datetime in its server/session TimeZone.
+                    for name, value in record.items():
+                        if isinstance(value, datetime) and value.tzinfo is None:
+                            record[name] = value.replace(tzinfo=timezone.utc)
                     for field in self_references:
                         record[field] = None
                 dst.execute(target_table.insert(), records)

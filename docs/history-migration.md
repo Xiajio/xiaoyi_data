@@ -34,6 +34,8 @@ docker compose run --rm -e XIAOYI_MIGRATION_TARGET_DB ops python -m xiaoyi_catal
 
 工具创建新 PG，用 Alembic 建立当前目标 schema，按依赖顺序转移全部旧业务表并保留 ID。新增信任字段采用迁移的服务器默认值 `legacy_unverified`，不凭空补造旧审核证据。自引用分两步写入并保持旧时间戳；导入后在同一事务内比较每表数量和规范化行摘要，校正 PG sequence。唯一有意更改的原运行字段是过期 worker lease，变更在报告说明。全部 quality_report 另按 0010 的同一规则回填为 profile_run，保留原内容、producer 和时间戳，并在报告记录新增数量；旧报告仍保留。
 
+时间按现有应用的 UTC 约定迁移：SQLite 无时区时间在写入 PG 前显式绑定 UTC，避免受目标会话时区影响；UTC 和 Asia/Shanghai 两种会话均有全表摘要及审批时间回归。SQLite 本身不保留原偏移，因此若旧库使用自定义适配器或被人工写入本地时间，必须在预检阶段结合来源记录核对，不能从无时区值推断已丢失的时区。内置 Hugging Face 来源与应用生成时间使用 UTC。
+
 向量从 SQLite JSON 转为 PG vector（float32），对账使用相同 float32 规范化；原始 JSON 仍逐字节保留在归档 SQLite。所有资产原字节复制，hash 不变。失败时不覆盖、不删除源，不把部分目标当作成功实例；保留排查并换全新目标重试。
 
 成功生成 `migration-report.json`，含每表记录数与摘要、原库 SHA-256、归档文件 hash、资产数量和迁移 ID；数据库内同时写入迁移记录。归档库、checkpoint、报告设置只读权限，应进一步放入受控只读备份存储。报告写入失败时也不放行流量。

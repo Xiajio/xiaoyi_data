@@ -188,7 +188,8 @@ def test_deployment_migration_refuses_non_postgres_target(legacy_catalog, tmp_pa
                               tmp_path / "archive", quiesced=True)
 
 
-def test_real_postgres_full_migration_and_sequences(legacy_catalog, tmp_path):
+@pytest.mark.parametrize("session_timezone", ["UTC", "Asia/Shanghai"])
+def test_real_postgres_full_migration_and_sequences(legacy_catalog, tmp_path, session_timezone):
     import os
     import psycopg
     from psycopg import sql
@@ -211,16 +212,24 @@ def test_real_postgres_full_migration_and_sequences(legacy_catalog, tmp_path):
         builder.compile(checkpointer=saver).invoke({"value": 1}, {"configurable": {"thread_id": "research-run-1"}})
     backup = create_backup(source.url.database, storage, tmp_path / "backup", quiesced=True).parent
     database = "migration_test_" + uuid.uuid4().hex
-    url = make_url(connection_url).set(database=database)
+    url = make_url(connection_url).set(database=database).update_query_dict(
+        {"options": f"-c timezone={session_timezone}"})
+    _, source_summaries = inspect_source(source)
     report = None
     try:
         report = migrate_sqlite_backup(backup, url.render_as_string(hide_password=False),
             tmp_path / "pg-assets", tmp_path / "archive", quiesced=True)
         assert report["asset_files"] == 2
+        assert report["tables"] == source_summaries
         assert set(report["archive_files"]) == {"database.sqlite", "checkpoints.sqlite"}
         target = create_engine_for(url.render_as_string(hide_password=False))
         try:
             with target.begin() as connection:
+                assert connection.execute(text("SHOW TimeZone")).scalar() == session_timezone
+                assert connection.execute(text("SELECT created_at FROM review WHERE id=1")).scalar().astimezone(timezone.utc) == NOW
+                approval = connection.execute(text(
+                    "SELECT approved_hash, manifest_hash FROM download_request WHERE id=1")).one()
+                assert approval.approved_hash == approval.manifest_hash
                 assert connection.execute(text("SELECT COUNT(*) FROM review")).scalar() == 1
                 assert connection.execute(text("SELECT pg_typeof(vector)::text FROM vector_embedding")).scalar() == "vector"
                 new_id = connection.execute(text("INSERT INTO qa_conversation(actor,title,created_at,updated_at) VALUES ('new','new',now(),now()) RETURNING id")).scalar()

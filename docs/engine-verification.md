@@ -6,22 +6,28 @@
 
 | 阶段 | 交付 | 当前验证边界 |
 |---|---|---|
-| M0 | 哈希锁定依赖、镜像基底 digest、独立 migrate/ops、ready/worker 心跳、三队列 Compose、资源和日志限额、SQLite→PG 迁移、成套恢复工具 | 本地 SQLite 备份与恢复、迁移预检、44 表 PostgreSQL DDL/ORM 一致性通过；真实 PG 与完整 Compose 由 CI 验收 |
+| M0 | 哈希锁定依赖、镜像基底 digest、独立 migrate/ops、ready/worker 心跳、三队列 Compose、资源和日志限额、SQLite→PG 迁移、成套恢复工具 | 本地 SQLite 与真实 PG16 备份恢复、UTC/上海时区全历史迁移、DDL/ORM 一致性通过；完整 Compose 由 Linux CI 验收 |
 | M1 | TaskSpec v1 的 all_of/any_of/optional、统一四态约束判定、非空引文验证、不可变生成版本、审核快照与内容哈希 | 单元与 HTTP/MCP 回归；未知/不支持约束不会进入可用状态，重新生成及更正保留历史 |
-| M2 | Job/Attempt/Artifact/RunEvent、短事务领取、续租与提交围栏、取消/重试、旧任务映射、三种独立队列、派生和打包异步化 | 并发领取、过期租约、迟到写入、取消、预算、完成前崩溃及产物回执；新增真实 PG SKIP LOCKED、租约围栏及完整样本 worker 集成测试，由 CI 与部署演练验证 |
+| M2 | Job/Attempt/Artifact/RunEvent、短事务领取、续租与提交围栏、取消/重试、旧任务映射、三种独立队列、派生和打包异步化 | 并发领取、过期租约、迟到写入、取消、预算、完成前崩溃及产物回执；真实 PG SKIP LOCKED、租约围栏及完整样本 worker 集成测试在本地与 CI 验证 |
 | M3 | 样本/标注/分组/构建/画像模型、三类配方、Parquet 分片、确定性精确去重和分组切分、人工发布与独立加载包 | 实际小型 CSV/TSV/JSONL/TXT/Parquet/图像文件，损坏、缺失、关联、标签修订、泄漏、重复执行与篡改拒绝 |
 | M4 | 目录/科研/问答共用检索服务、SimHash/dHash 近重复候选、标签冲突、分布、预算选择、基准污染候选 | 固定算法版本与样本定位，有界候选索引，截断明确报告；不自动删除相似样本，不把候选当成确定污染 |
 | M5 | 分类预测导入、精确评估构建绑定、固定模型/预算/协议比较、错误样本回流 | 合成夹具真实执行四组 CPU 训练与预测导入；真实科研效果、真实模型接口仍需业务试点 |
 
 ## 本地自动化
 
-- 完整后端：`python -m pytest platform/tests -q`，402 passed / 9 skipped（55.79 秒）。跳过项必须按 pytest 原因区分：本机缺少 PostgreSQL，以及 Windows 不适用的符号链接断言，不代表相关部署门禁通过。
-- 前端：TypeScript、生产构建及 133 项 Vitest 通过。
-- 浏览器：75 项 Playwright 通过，包含既有流程与数据构建、发布、异步导出、实验协议和对照、权限、窄屏。新增队列健康组件后14项相关浏览器回归通过；审计表格命名后9项真实API浏览器回归通过；任务进度接入后5项数据构建回归通过。
+- 2026-10-18 本地重新验收：Windows / Python 3.12.12 / PostgreSQL 16.15 / pgvector 0.8.7。完整后端与真实 PG 测试同次执行，**421 passed / 1 skipped（69.89 秒）**；唯一跳过为当前 Windows 账户不能创建符号链接。
+- PostgreSQL 与历史迁移专项 28 passed；源/目标全部旧表数量及规范化摘要一致，审批时间/批准范围、主键和序列通过。真实 pg_dump/pg_restore 演练保留 1 个研究包、审核历史和 PG checkpoint；恢复后 checkpoint 接续，研究包在独立 Python 进程加载 1 个资产 / 2 行。
+- 前端新跑 `npm run check`：TypeScript、生产构建、133 项 Vitest、75 项 Playwright 全部通过；前端源码在后续后端修复中未改变。
+- 独立真实 PG/API 验收关闭 DEV_AUTH，启用交互/I/O/CPU 三 worker。文本 90 行、表格 90 行、图像 2 个有效样本分别完成异步构建、人工批准、导出与独立加载；篡改的副本全部拒绝。匿名读取 401、reader 创建 403、researcher/agent 发布 403、人工 reviewer 发布 200。
+- 本轮修复两处实际失败：损坏图像解码异常中的磁盘路径进入排除记录，导致跨目录构建哈希不同；SQLite naive UTC 时间被非 UTC PostgreSQL 会话解释为本地时间。分别增加跨目录清单稳定性和 UTC/Asia/Shanghai 完整迁移回归，保留修前失败证据；真实 I/O 失败仍中止构建，不伪装为坏样本。
+- 新一轮三类小型数据验证通过坏文件、缺失、错误标签、关联失败、重复、跨目录复现与独立加载/篡改拒绝；90 条分组夹具的 30 个组无跨集合泄漏。四组固定 CPU 训练、160 条预测及 20 条错误样本回流通过，仍仅为合成闭环证据。
+
 - 可复现合成对照：见 [输入哈希与结果证据](data-engine-acceptance.json)。同模型、同 80 样本训练预算、同 40 样本评估集，原始/清洗/去重/预算选择准确率 0.5/1.0/1.0/1.0。该夹具刻意包含非法标签和重复项，仅证明闭环。
 - 百万样本与并发目录读取：[实测报告](benchmarks/benchmark.json)。100 万输入与输出，构建 418.47 秒；构建加负载生成进程峰值 165.43 MiB，独立 API 128.02 MiB。300 条合成目录、10 并发真实 localhost HTTP 共 8,570 次读取、零错误，P95 847.83 ms，最大 2,199.35 ms。环境是 Windows 11 / i9-13900KF / 32 逻辑 CPU / 约 32 GiB RAM / SQLite，不能等同建议的 8 vCPU Linux/PG 主机。测量期间只有离线迁移器变更，处理及 HTTP 源码不变，见[源码差异说明](benchmarks/source-review.json)。
 
-隔离测试目录位于 `.test-tmp/`、`.test-runs/`，均被 Git 和 Docker 构建忽略，不使用现有生产数据库。
+本轮详细原始证据保存在本机 `output/local-acceptance-20261018/`：最终完整后端 `backend/final-summary.json`、PG `postgres/acceptance-summary.json`、前端 `frontend/summary.json`、三类数据 `data-engine/post-fix/acceptance-report.json`、真实 HTTP `live/http-acceptance.json`。前述百万行性能是既有测量，本轮没有重跑；真实 LLM、100 GB 恢复及目标 Linux 主机验收仍待实施。
+
+隔离测试目录位于 `.test-tmp/`、`.test-runs/`、`output/`，均被 Git 和 Docker 构建忽略，不使用现有生产数据库。
 
 ## Linux 发布门禁
 
